@@ -1,23 +1,35 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-IN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 36 36'%3E%3Ccircle cx='18' cy='18' r='15' fill='none' stroke='%236b7380' stroke-width='3'/%3E%3Ccircle cx='18' cy='18' r='5' fill='%236b7380'/%3E%3C/svg%3E">
+  <meta name="color-scheme" content="light dark"><meta name="theme-color" content="#F3F3F1">
+  <!-- Approved Chakra Engine kit favicons; 16 and 24 px use the kit's eight-path optical variant. -->
+  <link rel="icon" href="/brand/favicon.ico" sizes="16x16 24x24 32x32 64x64">
+  <link rel="icon" type="image/png" sizes="16x16" href="/brand/favicon-16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/brand/favicon-180.png">
   <meta name="pilot-token" content="REQUEST_TOKEN">
-  <title>Krutrim Mulyankan · Local pilot</title>
-  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script><script src="/compare.js" defer></script><script src="/jobs.js" defer></script>
+  <title>Krutrim Mulyankan Evaluator · Local workspace</title>
+  <link rel="stylesheet" href="/style.css"><script src="/theme.js"></script><script src="/app.js" defer></script><script src="/compare.js" defer></script><script src="/jobs.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand"><svg class="brand-mark" aria-hidden="true" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="18" cy="18" r="4" fill="currentColor"/><path d="M18 3v11m0 8v11M3 18h11m8 0h11M7 7l8 8m6 6 8 8M7 29l8-8m6-6 8-8" stroke="currentColor" stroke-width="2"/></svg><span class="brand-name">Krutrim Mulyankan</span><span class="flag">Unvalidated pilot</span></div>
-      <nav class="nav" aria-label="Sections"><button type="button" data-view="board" aria-current="page">Compare</button><button type="button" data-view="tasks">Tasks</button><button type="button" data-view="dashboard">Run</button><button type="button" data-view="overview">About</button></nav>
-      <button id="theme-toggle" class="icon-button" type="button" aria-label="Switch colour theme"><svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg><svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2m0 15v2M4.6 4.6 6 6m12 12 1.4 1.4M2.5 12h2m15 0h2M4.6 19.4 6 18M18 6l1.4-1.4"/></svg></button>
+  <div class="edition"><div class="edition-inner"><span>India-focused AI evaluation / Evaluator</span><span>Unvalidated pilot · Local workspace · Results stay on this machine</span></div></div>
+  <header class="site-header">
+    <a class="identity" href="/" data-view="board" aria-label="Krutrim Mulyankan Evaluator home">
+      <img class="logo-on-light" src="/brand/km-chakra-wordmark.svg" width="420" height="143" alt="Krutrim Mulyankan — कृत्रिम मूल्यांकन">
+      <img class="logo-on-dark" src="/brand/km-chakra-wordmark-white.svg" width="420" height="143" alt="Krutrim Mulyankan — कृत्रिम मूल्यांकन">
+    </a>
+    <div class="header-actions">
+      <div class="theme-toggle" role="group" aria-label="Appearance"><button id="theme-system" type="button" aria-pressed="true" aria-label="Follow the device theme">System</button><button id="theme-light" type="button" aria-pressed="false" aria-label="Use light theme">Light</button><button id="theme-dark" type="button" aria-pressed="false" aria-label="Use dark theme">Dark</button></div>
+      <span class="status-chip">Local · paid APIs off</span>
     </div>
+    <p id="theme-status" class="sr-only" role="status" aria-live="polite"></p>
   </header>
-  <div class="pilot-strip" role="note"><div class="pilot-strip-inner"><strong id="mode-label">UNVALIDATED / PILOT</strong><span id="mode-message">Local workspace · Not a ranking · Paid APIs disabled · Results stay on this machine</span></div></div>
+  <div class="nav-row">
+    <nav class="nav" aria-label="Sections"><button type="button" data-view="board" aria-current="page">Compare</button><button type="button" data-view="tasks">Tasks</button><button type="button" data-view="dashboard">Run</button><button type="button" data-view="overview">About</button></nav>
+    <div class="nav-links"><a href="https://krutrimmulyankan.in/" target="_blank" rel="noopener">krutrimmulyankan.in ↗</a><a href="https://github.com/piyushbodaa/krutrim-mulyankan-evaluator" target="_blank" rel="noopener">GitHub ↗</a></div>
+  </div>
   <main id="main">
     <nav class="subnav" data-subnav="tasks" aria-label="Task views" hidden><button type="button" data-view="tasks">Pilot tasks</button><button type="button" data-view="proposals">Proposed</button></nav>
     <nav class="subnav" data-subnav="run" aria-label="Run tools" hidden><button type="button" data-view="dashboard">Jobs</button><button type="button" data-view="compare">Recorded answers</button><button type="button" data-view="observations">App observations</button><button type="button" data-view="results">Saved</button></nav>
@@ -130,5 +142,5 @@
       </div>
     </section>
   </main>
-  <footer>UNVALIDATED / PILOT · Not a ranking · Observed latency ≠ model speed · Contributor-reported app context needs review · No mixed app/API ranking</footer>
+  <footer><span class="footer-brand"><span lang="hi">कृत्रिम मूल्यांकन</span> / Krutrim Mulyankan</span><span>Unvalidated / pilot · Not a ranking · Observed latency ≠ model speed · Contributor-reported app context needs review · No mixed app/API ranking</span><a href="https://krutrimmulyankan.in/" target="_blank" rel="noopener">krutrimmulyankan.in ↗</a></footer>
 </body></html>

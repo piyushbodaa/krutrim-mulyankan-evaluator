@@ -11,3 +11,11 @@ original research/pilot datasets and gold answers, private Git history and perso
 
 The bundled suites (suites/*.yaml) and preview fixtures are SYNTHETIC smoke fixtures.
 They validate the software only. They are not benchmark results and evaluate no AI model.
+
+Brand assets: preview/brand/ and src/kritrim_mulyankan/ui_assets/brand/ hold the owner-approved
+Krutrim Mulyankan logo lockups (Chakra Engine identity) and favicons, copied unmodified from the
+project's brand kit, plus a social card composed from them. They identify the project and are not
+part of the MIT-licensed code; reuse needs the project owner's permission.
+
+Fonts: Sora and Noto Sans Devanagari are licensed under the SIL Open Font License 1.1 (texts in
+brand/fonts/). They are the brand kit's TTF files repackaged as WOFF2 with glyphs unchanged.

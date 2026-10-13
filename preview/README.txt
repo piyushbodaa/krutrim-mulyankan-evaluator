@@ -1,6 +1,7 @@
 STATIC PILOT PREVIEW (UNVALIDATED)
 ==================================
-Public static preview of the rebuilt Krutrim Mulyankan / Chakra Engine dashboard.
+Public static preview of the Krutrim Mulyankan evaluator dashboard, in the approved
+monochrome identity of krutrimmulyankan.in (kit logo and favicons, Sora, Noto Sans Devanagari).
 
 Includes:
 - Rebuilt selection / progress / inspect UI (live execution disabled)
@@ -21,4 +22,4 @@ Execution:
 Notes:
 - Latency = observed end-to-end CLI run latency, not intrinsic model speed
 - Wonder Max was unavailable; Muse Spark must not be relabeled as Wonder Max
-- Separate product site krutrimmulyankan.in is unrelated and unchanged
+- Main project site: krutrimmulyankan.in (unchanged; this preview shares its identity)

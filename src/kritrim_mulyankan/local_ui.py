@@ -64,6 +64,28 @@ TITLES = {
     "ROB04": "Spot an unreadable amount",
     "RAIL01": "Save a railway itinerary draft",
 }
+# Fixed allow-list of files under ui_assets/; the workbench never maps a URL onto an arbitrary path.
+# brand/ holds the approved Chakra Engine kit files, unmodified, plus its fonts converted to WOFF2.
+STATIC_ASSETS: dict[str, tuple[str, str]] = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/compare.js": ("compare.js", "text/javascript; charset=utf-8"),
+    "/jobs.js": ("jobs.js", "text/javascript; charset=utf-8"),
+    "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/favicon.ico": ("brand/favicon.ico", "image/x-icon"),
+    "/brand/favicon.ico": ("brand/favicon.ico", "image/x-icon"),
+    "/brand/favicon-16.png": ("brand/favicon-16.png", "image/png"),
+    "/brand/favicon-32.png": ("brand/favicon-32.png", "image/png"),
+    "/brand/favicon-180.png": ("brand/favicon-180.png", "image/png"),
+    "/brand/km-chakra-wordmark.svg": ("brand/km-chakra-wordmark.svg", "image/svg+xml"),
+    "/brand/km-chakra-wordmark-white.svg": ("brand/km-chakra-wordmark-white.svg", "image/svg+xml"),
+    "/brand/fonts/Sora.woff2": ("brand/fonts/Sora.woff2", "font/woff2"),
+    "/brand/fonts/NotoSansDevanagari-Regular.woff2": (
+        "brand/fonts/NotoSansDevanagari-Regular.woff2",
+        "font/woff2",
+    ),
+}
 
 
 class ValidationRequest(BaseModel):
@@ -431,31 +453,16 @@ def create_server(
                 except (ValueError, OSError):
                     self.respond({"error": "comparison not found"}, HTTPStatus.NOT_FOUND)
                 return
-            asset = {
-                "/": "index.html",
-                "/app.js": "app.js",
-                "/compare.js": "compare.js",
-                "/jobs.js": "jobs.js",
-                "/style.css": "style.css",
-            }.get(path)
+            asset = STATIC_ASSETS.get(path)
             if not asset:
                 self.respond({"error": "Page not found."}, HTTPStatus.NOT_FOUND)
                 return
-            body = (assets / asset).read_bytes()
-            if asset == "index.html":
+            name, content_type = asset
+            body = (assets / name).read_bytes()
+            if name == "index.html":
                 body = body.replace(b"REQUEST_TOKEN", token.encode())
             self.send_response(HTTPStatus.OK)
-            self.send_header(
-                "Content-Type",
-                {
-                    "index.html": "text/html",
-                    "app.js": "text/javascript",
-                    "compare.js": "text/javascript",
-                    "jobs.js": "text/javascript",
-                    "style.css": "text/css",
-                }[asset]
-                + "; charset=utf-8",
-            )
+            self.send_header("Content-Type", content_type)
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; script-src 'self'; "
@@ -542,7 +549,7 @@ def create_server(
 def serve(project: Path, port: int = 8765) -> None:
     service = PilotService(project)
     with create_server(project, port, service=service) as server:
-        print(f"Chakra Engine local pilot: http://127.0.0.1:{server.server_port}/", flush=True)
+        print(f"Krutrim Mulyankan evaluator: http://127.0.0.1:{server.server_port}/", flush=True)
         print(
             "Recorded app evidence, mock controls and verified CLI drafts. Paid APIs disabled.",
             flush=True,

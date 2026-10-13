@@ -1,5 +1,9 @@
 {
   "cleanUrls": true,
+  "rewrites": [
+    {"source": "/favicon.ico", "destination": "/brand/favicon.ico"},
+    {"source": "/apple-touch-icon.png", "destination": "/brand/favicon-180.png"}
+  ],
   "headers": [
     {
       "source": "/(.*)",
