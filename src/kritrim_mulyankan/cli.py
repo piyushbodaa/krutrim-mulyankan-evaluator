@@ -5,6 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, NoReturn
+import os
 
 import typer
 from dotenv import find_dotenv, load_dotenv
@@ -35,10 +36,27 @@ console = Console()
 err = Console(stderr=True)
 
 
+def _apply_console_width() -> None:
+    """Honour COLUMNS at invocation time.
+
+    Rich snapshots environ when Console is constructed, and a dumb/non-TTY
+    terminal short-circuits size detection to 80x25 unless both width and
+    height are set. CliRunner tests export COLUMNS=250 for full cell text.
+    """
+    columns = os.environ.get("COLUMNS")
+    if columns and columns.isdigit():
+        width = max(40, int(columns))
+        lines = os.environ.get("LINES")
+        height = int(lines) if lines and lines.isdigit() else max(25, console.height or 25)
+        console.size = (width, height)
+        err.size = (width, height)
+
+
 @app.callback()
 def main() -> None:
     # Secrets come from the environment or a local .env; real env vars win.
     load_dotenv(find_dotenv(usecwd=True), override=False)
+    _apply_console_width()
 
 
 def _fail(msg: str) -> NoReturn:
