@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Krutrim Mulyankan",
+  "version": "0.1.0",
+  "identifier": "in.krutrimmulyankan.evaluator",
+  "build": {
+    "frontendDist": "../ui",
+    "devUrl": "http://127.0.0.1:17321",
+    "beforeDevCommand": "python3 -m http.server 17321 --directory ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Krutrim Mulyankan",
+        "width": 1120,
+        "height": 820,
+        "minWidth": 880,
+        "minHeight": 640
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'; frame-src http://127.0.0.1:* http://localhost:*"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": {
+      "resources/engine/": "engine/"
+    },
+    "macOS": {
+      "signingIdentity": "-"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

@@ -31,8 +31,27 @@ static, synthetic-data demo; nothing executes there (details below).
 uv sync
 uv run km run example -r echo -r oracle   # free mock controls
 uv run km ui --port 8765                  # open http://127.0.0.1:8765/
-uv run pytest                              # 119 offline tests
+uv run pytest                              # offline tests
 ```
+
+## Desktop app
+
+A window for the same engine, so a terminal is not required. Keys stay in the OS keychain.
+The pilot set is offered first, with a cost check in INR and USD before anything runs. Results
+reuse the At a glance dashboard in `preview/`. Development and unsigned installers:
+[desktop/README.md](desktop/README.md). Code signing is a later step
+([desktop/SIGNING.md](desktop/SIGNING.md)). The `km` command is unchanged.
+
+Pushing a tag `v<version>` (the same version as `pyproject.toml`) publishes these files
+on GitHub Releases. The site can link to `/releases/latest/download/<file>`:
+
+- `Krutrim-Mulyankan-linux.AppImage`
+- `Krutrim-Mulyankan-windows.exe`
+- `Krutrim-Mulyankan-mac.dmg`
+- `kritrim_mulyankan-<version>-py3-none-any.whl`
+- `km-linux-x86_64.tar.gz` — single-file `km`, with `suites/` beside the binary and packed inside it
+
+No tag is created by the workflow itself. The builds are unsigned.
 
 More: [docs/DEPLOY.md](docs/DEPLOY.md) (launch + hosted preview), [CONTRIBUTING.md](CONTRIBUTING.md).
 

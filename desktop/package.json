@@ -1,0 +1,13 @@
+{
+  "name": "krutrim-mulyankan-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Krutrim Mulyankan desktop shell. The window never asks for a terminal.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.7.0"
+  }
+}

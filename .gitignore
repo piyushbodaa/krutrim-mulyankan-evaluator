@@ -7,6 +7,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.spec
 
 # Secrets: only .env.example is committed
 .env
@@ -16,3 +17,10 @@ build/
 # Run artifacts and the results database
 runs/
 *.db
+
+# Desktop shell
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/resources/engine/*
+!desktop/src-tauri/resources/engine/.gitkeep

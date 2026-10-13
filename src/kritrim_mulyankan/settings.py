@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -25,8 +26,28 @@ class Settings(BaseModel):
         return cls(
             runs_dir=runs_dir,
             db_path=Path(env.get("MJ_DB", str(runs_dir / "results.db"))),
-            suites_dir=Path(env.get("MJ_SUITES_DIR", "suites")),
+            suites_dir=default_suites_dir(env),
             prices_path=Path(env.get("MJ_PRICES", "prices.yaml")),
             max_usd=float(env.get("MJ_MAX_USD", "1.0")),
             usd_to_inr=float(env.get("MJ_USD_INR", "88.0")),
         )
+
+
+def default_suites_dir(env: Mapping[str, str]) -> Path:
+    """Where `km` looks for suites.
+
+    A PyInstaller build prefers a `suites/` folder beside the `km` binary, then the
+    copy packed inside the binary. `MJ_SUITES_DIR` still wins. A normal checkout
+    keeps using `./suites`.
+    """
+    override = env.get("MJ_SUITES_DIR")
+    if override:
+        return Path(override)
+    if getattr(sys, "frozen", False):
+        beside = Path(sys.executable).resolve().parent / "suites"
+        if beside.is_dir():
+            return beside
+        bundled = Path(getattr(sys, "_MEIPASS", "")) / "suites"
+        if bundled.is_dir():
+            return bundled
+    return Path("suites")
