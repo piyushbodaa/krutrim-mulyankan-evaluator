@@ -71,8 +71,10 @@ const bridge = (() => {
 
   async function saveKey(provider, secret) {
     if (isTauri()) {
-      await window.__TAURI__.core.invoke("keychain_set", {provider, secret});
-      return "keychain";
+      // "keychain" when the OS store persisted it, "memory" when there is no
+      // working keychain and the key only lives in the engine for now.
+      const where = await window.__TAURI__.core.invoke("keychain_set", {provider, secret});
+      return where || "keychain";
     }
     const names = {
       openai: "OPENAI_API_KEY",

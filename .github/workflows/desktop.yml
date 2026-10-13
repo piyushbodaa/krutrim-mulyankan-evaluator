@@ -65,12 +65,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
           python -m pip install .
-          if [ "$RUNNER_OS" = "Windows" ]; then SEP=";"; else SEP=":"; fi
-          python -m PyInstaller --noconfirm --clean --onefile --name km-desktop \
+          if [ "$RUNNER_OS" = "Windows" ]; then SEP=";"; STRIP=""; else SEP=":"; STRIP="--strip"; fi
+          # Same slimming as release.yml; pygments is desktop-only safe to
+          # drop because the bridge never imports the Typer/rich CLI.
+          python -m PyInstaller --noconfirm --clean --onefile $STRIP --name km-desktop \
             --collect-all kritrim_mulyankan \
             --add-data "suites${SEP}suites" \
             --add-data "preview${SEP}preview" \
             --add-data "desktop/ui/dashboard-shim.js${SEP}desktop/ui" \
+            --exclude-module tkinter --exclude-module _tkinter \
+            --exclude-module test --exclude-module unittest \
+            --exclude-module pydoc --exclude-module pydoc_data \
+            --exclude-module lib2to3 --exclude-module setuptools \
+            --exclude-module pygments \
             desktop/sidecar/entry.py
           mkdir -p desktop/src-tauri/resources/engine
           if [ "$RUNNER_OS" = "Windows" ]; then

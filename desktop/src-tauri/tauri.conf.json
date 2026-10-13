@@ -27,6 +27,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Utility",
+    "shortDescription": "Check AI models on your own computer",
+    "longDescription": "Krutrim Mulyankan runs small AI checks on your own computer and shows plain charts. Unvalidated pilot. Not a ranking.",
     "resources": {
       "resources/engine/": "engine/"
     },

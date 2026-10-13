@@ -10,12 +10,28 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-keyring = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+
+# keyring has no default credential store: without a platform feature it
+# silently uses its mock store and keys are never persisted (keyring 3.6
+# docs, "Crate-provided Credential Stores"). Pick a real persistent store
+# per platform. On Linux, linux-native-sync-persistent combines the kernel
+# keyutils store with the D-Bus Secret Service (GNOME Keyring, KWallet),
+# and crypto-rust encrypts secrets on the bus without OpenSSL. If no Secret
+# Service is running, keyutils still holds the secret for the login session
+# and errors are reported to the user instead of hanging (see lib.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native-sync-persistent", "crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
 
 [profile.release]
 panic = "abort"

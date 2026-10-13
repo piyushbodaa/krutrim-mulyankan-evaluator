@@ -175,36 +175,43 @@ fn engine_call(state: State<'_, Arc<Engine>>, request: String) -> Result<(), Str
 }
 
 #[tauri::command]
-fn keychain_set(state: State<'_, Arc<Engine>>, provider: String, secret: String) -> Result<(), String> {
+fn keychain_set(state: State<'_, Arc<Engine>>, provider: String, secret: String) -> Result<String, String> {
     let env_name = env_for(&provider).ok_or("Unknown provider.")?;
     if secret.len() > 4096 || secret.chars().any(|char| matches!(char, '\n' | '\r' | '\0')) {
         return Err("A key cannot contain a line break.".into());
     }
-    let entry = Entry::new(SERVICE, &provider).map_err(|_| "The system keychain is unavailable.".to_string())?;
-    if secret.is_empty() {
-        let _ = entry.delete_credential();
-    } else {
-        entry
-            .set_password(&secret)
-            .map_err(|_| "Could not save to the system keychain.".to_string())?;
-    }
-    state.call("set_keys", json!({"keys": {env_name: secret}}))
+    // Persist when an OS credential store answers. Without one (no Secret
+    // Service, locked keyring), still hand the key to the engine for this
+    // session and say so, instead of refusing a key the user just typed.
+    let persisted = match Entry::new(SERVICE, &provider) {
+        Ok(entry) if secret.is_empty() => entry.delete_credential().is_ok(),
+        Ok(entry) => entry.set_password(&secret).is_ok(),
+        Err(_) => false,
+    };
+    state.call("set_keys", json!({"keys": {env_name: secret}}))?;
+    Ok(if persisted { "keychain".into() } else { "memory".into() })
 }
 
 #[tauri::command]
 fn keychain_status() -> Vec<String> {
-    let mut saved = Vec::new();
-    for (provider, _) in KEYS {
-        let Ok(entry) = Entry::new(SERVICE, *provider) else {
-            continue;
-        };
-        if let Ok(secret) = entry.get_password() {
-            if !secret.is_empty() {
-                saved.push((*provider).to_string());
+    // Same guard as saved_secrets(): a locked or missing Secret Service must
+    // report "nothing saved" after a short wait, never freeze the window.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut saved = Vec::new();
+        for (provider, _) in KEYS {
+            let Ok(entry) = Entry::new(SERVICE, *provider) else {
+                continue;
+            };
+            if let Ok(secret) = entry.get_password() {
+                if !secret.is_empty() {
+                    saved.push((*provider).to_string());
+                }
             }
         }
-    }
-    saved
+        let _ = tx.send(saved);
+    });
+    rx.recv_timeout(Duration::from_secs(3)).unwrap_or_default()
 }
 
 #[tauri::command]

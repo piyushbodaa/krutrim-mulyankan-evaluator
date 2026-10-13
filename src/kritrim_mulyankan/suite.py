@@ -189,7 +189,12 @@ def load_suite(path: Path) -> Suite:
 
 
 def resolve_suite(name_or_path: str, suites_dir: Path) -> Path:
-    """Accept a path to a YAML file or a bare suite name found in suites_dir."""
+    """Accept a path to a YAML file or a bare suite name found in suites_dir.
+
+    `suites/example.yaml` and `example.yaml` also resolve against suites_dir,
+    so the installed-file spelling works from a folder with no suites/ in it
+    (for example right after installing `km` into ~/.local/bin).
+    """
     candidate = Path(name_or_path)
     if candidate.is_file():
         return candidate
@@ -197,6 +202,9 @@ def resolve_suite(name_or_path: str, suites_dir: Path) -> Path:
         named = suites_dir / f"{name_or_path}{ext}"
         if named.is_file():
             return named
+    in_suites_dir = suites_dir / candidate.name
+    if in_suites_dir.is_file():
+        return in_suites_dir
     raise FileNotFoundError(f"no suite {name_or_path!r} (looked for a file and in {suites_dir}/)")
 
 
