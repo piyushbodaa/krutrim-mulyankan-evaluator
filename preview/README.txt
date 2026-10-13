@@ -4,6 +4,8 @@ Public static preview of the Krutrim Mulyankan evaluator dashboard, in the appro
 monochrome identity of krutrimmulyankan.in (kit logo and favicons, Sora, Noto Sans Devanagari).
 
 Includes:
+- "At a glance" plain-language dashboard (report card, speedometer, chat replay, phone-style
+  comparison) built from the same PASS/FAIL and latency aggregates
 - Rebuilt selection / progress / inspect UI (live execution disabled)
 - REAL CLI harness aggregates from the 13 Oct 2026 IST india-pilot compare
   · Claude Code 2.1.296 / claude-opus-5-5: 23/24, median 4.1s end-to-end CLI latency

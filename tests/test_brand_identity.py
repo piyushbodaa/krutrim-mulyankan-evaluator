@@ -37,7 +37,7 @@ KIT_FILES = {
 }
 # The kit's Sora.ttf and NotoSansDevanagari-Regular.ttf, losslessly converted with woff2_compress.
 WEB_FONTS = ["fonts/Sora.woff2", "fonts/NotoSansDevanagari-Regular.woff2"]
-SHARED = ["style.css", "theme.js", "compare.js"]
+SHARED = ["style.css", "theme.js", "compare.js", "showcase.js"]
 # Carbon, white, neutral, secondary text, borders; then the main site's dark palette and hover.
 PALETTE = {"#171717", "#FFFFFF", "#F3F3F1", "#5F6065", "#D8D8D5"}
 MAIN_SITE_EXTRAS = {"#242422", "#41413E", "#BEBEBA", "#444444"}

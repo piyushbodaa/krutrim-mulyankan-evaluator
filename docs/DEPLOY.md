@@ -30,7 +30,7 @@ cd preview && npx vercel deploy --prod   # framework: Other, no build command
 ```
 
 `preview/` and the local dashboard (`src/kritrim_mulyankan/ui_assets/`) share `style.css`,
-`theme.js`, `compare.js` and `brand/`. `tests/test_brand_identity.py` fails if the two copies drift
+`theme.js`, `compare.js`, `showcase.js` and `brand/`. `tests/test_brand_identity.py` fails if the two copies drift
 or if a logo, favicon or font licence differs from the approved brand kit.
 
 What stays **local-only**: Claude/Muse/other CLI harness runs, model-API runs,

@@ -24,13 +24,13 @@
   <meta name="twitter:image" content="https://krutrim-mulyankan-evaluator.vercel.app/brand/social-card.png">
   <meta name="twitter:image:alt" content="Approved monochrome Chakra Engine logo and Krutrim Mulyankan name, titled Evaluator, labelled unvalidated pilot results">
   <meta name="pilot-token" content="static-preview-placeholder">
-  <link rel="stylesheet" href="style.css"><script src="theme.js"></script><script src="preview-fixtures.js" defer></script><script src="app.js" defer></script><script src="compare.js" defer></script><script src="jobs.js" defer></script>
+  <link rel="stylesheet" href="style.css"><script src="theme.js"></script><script src="preview-fixtures.js" defer></script><script src="app.js" defer></script><script src="showcase.js" defer></script><script src="compare.js" defer></script><script src="jobs.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
   <div class="edition"><div class="edition-inner"><span>India-focused AI evaluation / Evaluator</span><span>Unvalidated pilot · Not a ranking · Static preview</span></div></div>
   <header class="site-header">
-    <a class="identity" href="./" data-view="board" aria-label="Krutrim Mulyankan Evaluator home">
+    <a class="identity" href="./" data-view="glance" aria-label="Krutrim Mulyankan Evaluator home">
       <img class="logo-on-light" src="brand/km-chakra-wordmark.svg" width="420" height="143" alt="Krutrim Mulyankan — कृत्रिम मूल्यांकन">
       <img class="logo-on-dark" src="brand/km-chakra-wordmark-white.svg" width="420" height="143" alt="Krutrim Mulyankan — कृत्रिम मूल्यांकन">
     </a>
@@ -41,7 +41,7 @@
     <p id="theme-status" class="sr-only" role="status" aria-live="polite"></p>
   </header>
   <div class="nav-row">
-    <nav class="nav" aria-label="Sections"><button type="button" data-view="board" aria-current="page">Compare</button><button type="button" data-view="tasks">Tasks</button><button type="button" data-view="dashboard">Run</button><button type="button" data-view="overview">About</button></nav>
+    <nav class="nav" aria-label="Sections"><button type="button" data-view="glance" aria-current="page">At a glance</button><button type="button" data-view="board">Compare</button><button type="button" data-view="tasks">Tasks</button><button type="button" data-view="dashboard">Run</button><button type="button" data-view="overview">About</button></nav>
     <div class="nav-links"><a href="https://krutrimmulyankan.in/" target="_blank" rel="noopener">krutrimmulyankan.in ↗</a><a href="https://github.com/piyushbodaa/krutrim-mulyankan-evaluator" target="_blank" rel="noopener">GitHub ↗</a></div>
   </div>
   <main id="main">
@@ -49,7 +49,11 @@
     <nav class="subnav" data-subnav="run" aria-label="Run tools" hidden><button type="button" data-view="dashboard">Jobs</button><button type="button" data-view="compare">Recorded answers</button><button type="button" data-view="observations">App observations</button><button type="button" data-view="results">Saved</button></nav>
     <div id="error" class="error" role="alert" hidden></div>
 
-    <section id="board-view" aria-labelledby="board-title">
+    <section id="glance-view" aria-labelledby="glance-title">
+      <div id="glance" class="glance"><p class="muted">Loading results…</p></div>
+    </section>
+
+    <section id="board-view" aria-labelledby="board-title" hidden>
       <header class="hero">
         <div class="hero-chips"><span class="chip chip-warn">Unvalidated</span><span class="chip chip-warn">Pilot</span><span class="chip">Not a ranking</span><span id="board-source" class="hero-source"></span></div>
         <h1 id="board-title">CLI pilot comparison</h1>

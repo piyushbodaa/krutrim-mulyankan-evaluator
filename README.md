@@ -16,6 +16,9 @@ static, synthetic-data demo; nothing executes there (details below).
 - `km ui`: a loopback-only dashboard (http://127.0.0.1:8765/) to choose tasks and
   adapters, review the run plan, start/cancel/retry jobs, watch progress, inspect
   results and evidence, compare recorded app answers, and record app observations.
+- **At a glance**: the view both UIs open on. It explains results for people new to AI with
+  everyday instruments: a report card with phone-signal bars, a speedometer, a chat replay of the
+  measured waits and a phone-style comparison table. It reads outcomes and timings only.
 - Versioned machine API (`/api/v1`) with JSON schemas in `docs/`.
 - Separate tracks that are never mixed into one ranking: **mock controls**
   (oracle/echo, zero cost), **CLI harnesses** (e.g. a tool-free Claude Code draft

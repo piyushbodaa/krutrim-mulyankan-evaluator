@@ -69,6 +69,7 @@ TITLES = {
 STATIC_ASSETS: dict[str, tuple[str, str]] = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/showcase.js": ("showcase.js", "text/javascript; charset=utf-8"),
     "/compare.js": ("compare.js", "text/javascript; charset=utf-8"),
     "/jobs.js": ("jobs.js", "text/javascript; charset=utf-8"),
     "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
