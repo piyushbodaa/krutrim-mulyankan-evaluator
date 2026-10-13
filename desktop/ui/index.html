@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#F3F3F1">
+  <title>Krutrim Mulyankan</title>
+  <link rel="icon" href="brand/favicon.ico" sizes="16x16 24x24 32x32 64x64">
+  <link rel="icon" type="image/png" sizes="32x32" href="brand/favicon-32.png">
+  <link rel="stylesheet" href="app.css">
+  <script src="theme.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="edition"><div class="edition-inner">
+    <span data-i18n="edition.place">India-focused AI evaluation</span>
+    <span>Unvalidated pilot · Not a ranking · Too close to call</span>
+  </div></div>
+  <header class="shell-header">
+    <a class="identity" href="#welcome" id="home-link" aria-label="Krutrim Mulyankan">
+      <img class="logo-on-light" src="brand/km-chakra-wordmark.svg" width="420" height="143" alt="Krutrim Mulyankan — कृत्रिम मूल्यांकन">
+      <img class="logo-on-dark" src="brand/km-chakra-wordmark-white.svg" width="420" height="143" alt="Krutrim Mulyankan — कृत्रिम मूल्यांकन">
+    </a>
+    <div class="header-actions">
+      <div class="seg" role="group" aria-label="Language">
+        <button type="button" data-lang="en" aria-pressed="true">English</button>
+        <button type="button" data-lang="hi" aria-pressed="false">हिन्दी</button>
+      </div>
+      <div class="seg" role="group" aria-label="Appearance">
+        <button id="theme-system" type="button" aria-pressed="true" data-i18n="theme.system">System</button>
+        <button id="theme-light" type="button" aria-pressed="false" data-i18n="theme.light">Light</button>
+        <button id="theme-dark" type="button" aria-pressed="false" data-i18n="theme.dark">Dark</button>
+      </div>
+      <button class="text-button" id="keys-link" type="button" data-i18n="common.keys">API keys</button>
+    </div>
+  </header>
+  <p id="theme-status" class="sr-only" role="status" aria-live="polite" hidden></p>
+  <main id="main" class="main">
+    <div class="chips" aria-label="Honesty labels">
+      <span class="chip">Unvalidated pilot</span>
+      <span class="chip">Not a ranking</span>
+      <span class="chip">Too close to call</span>
+    </div>
+    <p class="gloss" data-i18n="honesty.gloss">Too close to call means the gap could be chance, not that they are equal.</p>
+    <div id="notice" class="notice" role="alert" hidden></div>
+
+    <section id="welcome" class="screen">
+      <p class="kicker" data-i18n="welcome.kicker">On your computer</p>
+      <h1 data-i18n="welcome.title">Check an AI model without a terminal.</h1>
+      <p class="lede" data-i18n="welcome.body">Add keys for the providers you use, pick models and a test pack, look at the cost, then run. Results open in the same At a glance view, with the third umpire.</p>
+      <p class="muted" data-i18n="welcome.note">Practice checks need no key and cost nothing. They are not a ranking.</p>
+      <div class="actions"><button class="primary" id="start" type="button" data-i18n="welcome.start">Get started</button></div>
+    </section>
+
+    <section id="keys" class="screen" hidden>
+      <ol class="steps"><li class="on">1 · Keys</li><li>2 · Models</li><li>3 · Pack</li><li>4 · Cost</li><li>5 · Run</li></ol>
+      <h1 data-i18n="keys.title">Add API keys</h1>
+      <p class="lede" data-i18n="keys.body">Keys are stored in the system keychain, not in a file. Skip this if you only want the free practice checks.</p>
+      <div id="provider-list" class="grid"></div>
+      <div class="actions">
+        <button class="secondary" id="keys-back" type="button" data-i18n="common.back">Back</button>
+        <button class="secondary" id="keys-skip" type="button" data-i18n="keys.skip">Skip for now</button>
+        <button class="primary" id="keys-next" type="button" data-i18n="keys.next">Continue</button>
+      </div>
+    </section>
+
+    <section id="models" class="screen" hidden>
+      <ol class="steps"><li>1 · Keys</li><li class="on">2 · Models</li><li>3 · Pack</li><li>4 · Cost</li><li>5 · Run</li></ol>
+      <h1 data-i18n="models.title">Pick what to check</h1>
+      <p class="lede" data-i18n="models.body">Practice checks are free. A priced model can spend money, and only up to the cap you set next.</p>
+      <div id="model-list"></div>
+      <div class="actions">
+        <button class="secondary" data-goto="keys" type="button" data-i18n="common.back">Back</button>
+        <button class="primary" id="models-next" type="button" data-i18n="models.next">Choose a test pack</button>
+      </div>
+    </section>
+
+    <section id="pack" class="screen" hidden>
+      <ol class="steps"><li>1 · Keys</li><li>2 · Models</li><li class="on">3 · Pack</li><li>4 · Cost</li><li>5 · Run</li></ol>
+      <h1 data-i18n="pack.title">Pick a test pack</h1>
+      <p class="lede" data-i18n="pack.body">The pilot set is the place to start.</p>
+      <div id="pack-list" class="grid"></div>
+      <div class="actions">
+        <button class="secondary" data-goto="models" type="button" data-i18n="common.back">Back</button>
+        <button class="primary" id="pack-next" type="button" data-i18n="pack.next">See the cost</button>
+      </div>
+    </section>
+
+    <section id="cost" class="screen" hidden>
+      <ol class="steps"><li>1 · Keys</li><li>2 · Models</li><li>3 · Pack</li><li class="on">4 · Cost</li><li>5 · Run</li></ol>
+      <h1 data-i18n="cost.title">Cost before anything runs</h1>
+      <p class="lede" data-i18n="cost.body">This is the worst case, not a bill. It assumes the whole prompt goes in and the answer uses the full length allowed.</p>
+      <div class="fields">
+        <label class="field"><span data-i18n="cost.cap">Spending cap (USD)</span><input id="cap" type="number" min="0" step="0.25" value="1"></label>
+        <label class="field"><span data-i18n="cost.repeats">Tries per task</span>
+          <select id="repeats"><option value="1">1</option><option value="3">3</option><option value="5">5</option></select>
+        </label>
+      </div>
+      <div id="cost-hero" class="cost-hero" aria-live="polite"></div>
+      <div id="cost-table"></div>
+      <p class="muted" data-i18n="cost.fx">Rupee amounts use the rate stored in the app, not a live bank rate.</p>
+      <label class="confirm"><input id="confirm" type="checkbox"><span id="confirm-label"></span></label>
+      <div class="actions">
+        <button class="secondary" data-goto="pack" type="button" data-i18n="common.back">Back</button>
+        <button class="primary" id="run" type="button" disabled data-i18n="cost.run">Run</button>
+      </div>
+    </section>
+
+    <section id="progress" class="screen" hidden>
+      <ol class="steps"><li>1 · Keys</li><li>2 · Models</li><li>3 · Pack</li><li>4 · Cost</li><li class="on">5 · Run</li></ol>
+      <h1 data-i18n="progress.title">Running</h1>
+      <p class="lede" data-i18n="progress.body">The dial shows how much of this run is done. It is not a speed ranking.</p>
+      <div class="gauge-wrap">
+        <svg id="gauge" viewBox="0 0 240 150" role="img" aria-label="Run progress"></svg>
+        <div class="gauge-read" id="gauge-read" aria-live="polite"></div>
+      </div>
+      <ol id="attempt-log" class="log"></ol>
+      <div class="actions">
+        <button class="secondary" id="cancel" type="button" data-i18n="progress.cancel">Cancel remaining</button>
+        <button class="primary" id="open-results" type="button" disabled data-i18n="progress.open">Open results</button>
+      </div>
+    </section>
+
+    <section id="results" class="screen" hidden>
+      <div class="results-bar">
+        <button class="secondary" id="save-json" type="button" data-i18n="results.save">Save JSON</button>
+        <button class="secondary" id="export-json" type="button" data-i18n="results.export">Export</button>
+        <button class="secondary" id="share-card" type="button" data-i18n="results.share">Share card</button>
+        <button class="secondary" id="again" type="button" data-i18n="results.again">New check</button>
+        <span class="muted" data-i18n="results.note">At a glance and the third umpire use the same results view as the evaluator.</span>
+      </div>
+      <iframe id="dashboard" class="results-frame" title="At a glance and third umpire"></iframe>
+    </section>
+  </main>
+  <footer class="main">Unvalidated pilot · Not a ranking · Too close to call · <span lang="hi">कृत्रिम मूल्यांकन</span></footer>
+  <script src="i18n.js"></script>
+  <script src="bridge.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
