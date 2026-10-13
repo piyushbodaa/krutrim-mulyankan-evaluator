@@ -19,78 +19,12 @@ async function previewAPI(path, data) {
   throw new Error('Static preview has no fixture for this action.');
 }
 
-function renderPilotComparison(target) {
-  if (!target || !previewFixtures.pilot) return;
-  const pilot = previewFixtures.pilot;
-  target.replaceChildren();
-  const banner = document.createElement('div');
-  banner.className = 'mock-note pilot-banner';
-  banner.innerHTML = '<strong>UNVALIDATED / PILOT</strong><span>Real CLI harness aggregates from 13 Oct 2026 IST. Same prompts, high effort, no tools, first attempt. <em>Not a ranking.</em> Latency is end-to-end CLI latency, not intrinsic model speed. Wonder Max unavailable — Muse Spark is not Wonder Max. Prompts and answers are omitted.</span>';
-  target.append(banner);
-
-  const summary = document.createElement('div');
-  summary.className = 'dashboard-metrics';
-  summary.setAttribute('aria-label', 'Pilot CLI aggregates');
-  for (const cli of pilot.clis) {
-    const tile = document.createElement('div');
-    tile.className = 'metric-tile';
-    const strong = document.createElement('strong');
-    strong.textContent = cli.passed;
-    const span = document.createElement('span');
-    span.textContent = cli.version + ' · ' + cli.model + ' · median ' + cli.median_s + 's';
-    tile.append(strong, span);
-    summary.append(tile);
-  }
-  target.append(summary);
-
-  const table = document.createElement('table');
-  table.className = 'comparison-table';
-  const head = document.createElement('tr');
-  for (const title of ['Task', 'Category', 'Lang', 'Claude Code', 'Muse Code']) {
-    const th = document.createElement('th'); th.textContent = title; head.append(th);
-  }
-  table.append(head);
-  for (const row of pilot.per_task) {
-    const tr = document.createElement('tr');
-    const cells = [
-      row.task_id,
-      row.category,
-      row.language,
-      (row.claude.passed ? 'PASS ' : 'FAIL ') + row.claude.latency_s.toFixed(2) + 's',
-      (row.muse.passed ? 'PASS ' : 'FAIL ') + row.muse.latency_s.toFixed(2) + 's',
-    ];
-    for (const value of cells) {
-      const td = document.createElement('td'); td.textContent = value; tr.append(td);
-    }
-    table.append(tr);
-  }
-  const scroll = document.createElement('div');
-  scroll.className = 'table-scroll';
-  scroll.append(table);
-  target.append(scroll);
-
-  const cond = document.createElement('details');
-  const sum = document.createElement('summary');
-  sum.textContent = 'Pilot conditions (exact)';
-  cond.append(sum);
-  const ul = document.createElement('ul');
-  for (const item of pilot.conditions) {
-    const li = document.createElement('li'); li.textContent = item; ul.append(li);
-  }
-  cond.append(ul);
-  target.append(cond);
-}
-
 document.addEventListener('DOMContentLoaded', () => {
   for (const id of ['job-start','job-cancel','job-retry','run-check','compare-answers',
     'load-samples','save-observation','import-comparison-json','comparison-file']) {
     const element=document.getElementById(id); if(element) element.disabled=true;
   }
   for (const button of document.querySelectorAll('button[type="submit"]')) button.disabled=true;
-  const overviewPilot = document.getElementById('pilot-comparison');
-  if (overviewPilot) renderPilotComparison(overviewPilot);
-  const dashPilot = document.getElementById('dashboard-pilot-comparison');
-  if (dashPilot) renderPilotComparison(dashPilot);
   document.addEventListener('click', event => {
     const anchor=event.target.closest('a');
     if (!anchor || !anchor.getAttribute('href')?.startsWith('/api/')) return;
