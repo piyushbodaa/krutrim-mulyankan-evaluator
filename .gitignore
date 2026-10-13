@@ -1,0 +1,18 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Secrets: only .env.example is committed
+.env
+.env.*
+!.env.example
+
+# Run artifacts and the results database
+runs/
+*.db

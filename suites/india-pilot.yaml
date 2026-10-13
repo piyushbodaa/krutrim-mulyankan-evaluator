@@ -1,0 +1,53 @@
+{
+  "name": "india-pilot",
+  "version": "sanitized-smoke-1",
+  "validation_status": "smoke",
+  "description": "Synthetic UI/software fixtures. Original benchmark deliberately excluded.",
+  "tasks": [
+    {
+      "id": "DEMO01",
+      "version": 1,
+      "category": "rupee_numeracy",
+      "language": "en-IN",
+      "prompt": "Synthetic smoke fixture. Return exactly {\"total_inr\": NUMBER}. Add the two amounts in the context.\nContext: Amount A: INR 80. Amount B: INR 20.",
+      "context": "Amount A: INR 80. Amount B: INR 20.",
+      "grader": {
+        "type": "json",
+        "expected": {
+          "total_inr": 100
+        }
+      }
+    },
+    {
+      "id": "DEMO02",
+      "version": 1,
+      "category": "record_reconciliation",
+      "language": "en-IN",
+      "prompt": "Synthetic smoke fixture. Return exactly {\"unique_ids\": ARRAY}. Remove duplicate IDs from the context, preserving order.\nContext: Identifiers: A, B, A.",
+      "context": "Identifiers: A, B, A.",
+      "grader": {
+        "type": "json",
+        "expected": {
+          "unique_ids": [
+            "A",
+            "B"
+          ]
+        }
+      }
+    },
+    {
+      "id": "DEMO03",
+      "version": 1,
+      "category": "robustness_and_abstention",
+      "language": "en-IN",
+      "prompt": "Synthetic smoke fixture. Return exactly {\"due_date\": null} when the context supplies no due date.\nContext: No due date was supplied.",
+      "context": "No due date was supplied.",
+      "grader": {
+        "type": "json",
+        "expected": {
+          "due_date": null
+        }
+      }
+    }
+  ]
+}

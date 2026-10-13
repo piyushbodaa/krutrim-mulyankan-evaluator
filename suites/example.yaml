@@ -1,0 +1,98 @@
+# Tiny smoke-test suite: one task per category. Safe to run offline with the echo and oracle
+# runners. Bump a task's `version` whenever its meaning changes; results also record a content
+# hash, so silent edits show up.
+name: example
+version: 1
+description: Five tiny tasks, one per category, for checking the pipeline end to end.
+
+tasks:
+  - id: reasoning.bat-and-ball
+    version: 1
+    category: reasoning
+    prompt: |
+      A bat and a ball cost ₹110 in total. The bat costs ₹100 more than the ball.
+      How many rupees does the ball cost? Reply with the number only.
+    grader:
+      type: exact
+      expected: ["5", "₹5"]
+    timeout_s: 60
+    max_output_tokens: 2048
+    budget_usd: 0.25
+
+  - id: coding.sum-of-squares
+    version: 1
+    category: coding
+    prompt: |
+      What does this Python expression evaluate to? Reply with the value only.
+
+      sum(x * x for x in range(4))
+    grader:
+      type: exact
+      expected: "14"
+    timeout_s: 60
+    max_output_tokens: 2048
+    budget_usd: 0.25
+
+  - id: tool-use.pick-tool
+    version: 1
+    category: tool-use
+    prompt: |
+      You can call exactly one of these tools:
+      {{ tools }}
+      The user says: "{{ request }}"
+      Which tool should you call? Reply with the tool name only.
+    inputs:
+      tools: |-
+        - get_weather(city)
+        - send_email(to, subject, body)
+        - create_event(title, start, end)
+      request: Put my dentist appointment on Friday at 4pm in my calendar.
+    grader:
+      type: exact
+      expected: create_event
+      case_sensitive: true
+    timeout_s: 60
+    max_output_tokens: 2048
+    budget_usd: 0.25
+
+  - id: life-admin.bill-due-date
+    version: 1
+    category: life-admin
+    prompt: |
+      Here is a message from my electricity provider:
+
+      {{ bill_text }}
+
+      When is the payment due? Reply with the date only, as YYYY-MM-DD.
+    inputs:
+      bill_text: >-
+        Dear customer, your electricity bill of ₹2,340 for September 2026 has been generated.
+        Please pay by 5 Nov 2026 to avoid a late fee of ₹150. Account no. 4471-0932.
+    grader:
+      type: exact
+      expected: "2026-11-05"
+    timeout_s: 60
+    max_output_tokens: 2048
+    budget_usd: 0.25
+
+  - id: writing.late-order-apology
+    version: 1
+    category: writing
+    prompt: |
+      Write a two-sentence reply to a customer whose order arrived four days late.
+      They are annoyed but polite. You can offer free delivery on their next order.
+    grader:
+      type: llm_judge
+      mode: absolute
+      pass_threshold: 7
+    rubric: |
+      - Exactly two sentences.
+      - Apologises once, plainly, without excuses or blaming others.
+      - Offers the free delivery as a concrete next step.
+      - Warm, natural tone; no corporate filler ("we value your business").
+    reference: |-
+      I'm sorry your order arrived four days late; that's not the experience you should have had.
+      Your next delivery is on us, and I've added the credit to your account already.
+    timeout_s: 90
+    max_output_tokens: 2048
+    budget_usd: 0.25

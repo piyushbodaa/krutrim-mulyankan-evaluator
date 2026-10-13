@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "api_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Api Version",
+      "type": "string"
+    },
+    "suite": {
+      "default": "india-pilot",
+      "enum": [
+        "india-pilot",
+        "railway-pilot"
+      ],
+      "title": "Suite",
+      "type": "string"
+    },
+    "task_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 24,
+      "minItems": 1,
+      "title": "Task Ids",
+      "type": "array"
+    },
+    "adapter_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Adapter Ids",
+      "type": "array"
+    },
+    "seed": {
+      "default": 12,
+      "maximum": 2147483647,
+      "minimum": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "idempotency_key": {
+      "pattern": "^[A-Za-z0-9_-]{8,100}$",
+      "title": "Idempotency Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_ids",
+    "adapter_ids",
+    "idempotency_key"
+  ],
+  "title": "JobRequest",
+  "type": "object"
+}

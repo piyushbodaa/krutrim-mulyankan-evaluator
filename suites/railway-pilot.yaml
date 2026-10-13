@@ -1,0 +1,22 @@
+{
+  "name": "railway-pilot",
+  "version": "sanitized-smoke-1",
+  "validation_status": "smoke",
+  "description": "Synthetic UI/software fixtures. Original benchmark deliberately excluded.",
+  "tasks": [
+    {
+      "id": "DEMO04",
+      "version": 1,
+      "category": "robustness_and_abstention",
+      "language": "en-IN",
+      "prompt": "Synthetic smoke fixture. Return exactly {\"due_date\": null} when the context supplies no due date.\nContext: No due date was supplied.",
+      "context": "No due date was supplied.",
+      "grader": {
+        "type": "json",
+        "expected": {
+          "due_date": null
+        }
+      }
+    }
+  ]
+}

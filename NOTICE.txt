@@ -1,0 +1,13 @@
+Krutrim Mulyankan evaluator — public source snapshot
+
+Original code in this repository is released under the MIT License (see LICENSE).
+Third-party dependencies keep their own licences: anthropic (MIT), openai (Apache-2.0),
+pydantic (MIT), python-dotenv (BSD-3-Clause), PyYAML (MIT), rich (MIT), typer (MIT),
+pytest (MIT), ruff (MIT). They are installed from PyPI, not vendored here.
+
+This is a clean snapshot with fresh Git history. Excluded from it: credentials and .env
+files, results databases, run outputs, evidence archives, recordings, backups, the
+original research/pilot datasets and gold answers, private Git history and personal data.
+
+The bundled suites (suites/*.yaml) and preview fixtures are SYNTHETIC smoke fixtures.
+They validate the software only. They are not benchmark results and evaluate no AI model.

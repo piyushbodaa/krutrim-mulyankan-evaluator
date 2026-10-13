@@ -1,0 +1,327 @@
+{
+  "$defs": {
+    "AppContext": {
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "App",
+          "type": "string"
+        },
+        "app_url": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "App Url"
+        },
+        "client": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Client",
+          "type": "string"
+        },
+        "plan": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Plan",
+          "type": "string"
+        },
+        "client_version": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Version"
+        },
+        "displayed_model": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Displayed Model"
+        },
+        "session": {
+          "default": "unknown",
+          "enum": [
+            "fresh",
+            "existing",
+            "unknown"
+          ],
+          "title": "Session",
+          "type": "string"
+        },
+        "context_notes": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Context Notes",
+          "type": "string"
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed At"
+        },
+        "observed_latency_s": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed Latency S"
+        },
+        "subscription_amount": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subscription Amount"
+        },
+        "subscription_currency": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z]{3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subscription Currency"
+        },
+        "subscription_period": {
+          "anyOf": [
+            {
+              "enum": [
+                "month",
+                "year",
+                "other"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subscription Period"
+        },
+        "subscription_price_source": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subscription Price Source"
+        },
+        "observation_kind": {
+          "default": "contributor_reported",
+          "enum": [
+            "contributor_reported",
+            "test_fixture"
+          ],
+          "title": "Observation Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "app",
+        "client",
+        "plan"
+      ],
+      "title": "AppContext",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "suite": {
+      "const": "india-pilot",
+      "default": "india-pilot",
+      "title": "Suite",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "prompt_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Prompt Sha256",
+      "type": "string"
+    },
+    "app_context": {
+      "$ref": "#/$defs/AppContext"
+    },
+    "response": {
+      "maxLength": 30000,
+      "title": "Response",
+      "type": "string"
+    },
+    "evidence_note": {
+      "maxLength": 4000,
+      "minLength": 8,
+      "title": "Evidence Note",
+      "type": "string"
+    },
+    "evidence_references": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 10,
+      "title": "Evidence References",
+      "type": "array"
+    },
+    "configuration_name": {
+      "anyOf": [
+        {
+          "maxLength": 120,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Configuration Name"
+    },
+    "configuration_registry_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9._-]{1,80}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Configuration Registry Id"
+    },
+    "completion_status": {
+      "default": "unknown",
+      "enum": [
+        "completed",
+        "partial",
+        "not_completed",
+        "unknown"
+      ],
+      "title": "Completion Status",
+      "type": "string"
+    },
+    "observed_cost_amount": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observed Cost Amount"
+    },
+    "observed_cost_currency": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Z]{3}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observed Cost Currency"
+    },
+    "observed_cost_source": {
+      "anyOf": [
+        {
+          "maxLength": 500,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observed Cost Source"
+    },
+    "exact_prompt_used": {
+      "title": "Exact Prompt Used",
+      "type": "boolean"
+    },
+    "attested": {
+      "default": false,
+      "title": "Attested",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "task_id",
+    "prompt_sha256",
+    "app_context",
+    "response",
+    "evidence_note",
+    "exact_prompt_used"
+  ],
+  "title": "AppObservation",
+  "type": "object"
+}
