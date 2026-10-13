@@ -176,6 +176,8 @@ footer a:hover{text-decoration:underline}
 .res-mark svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:square}
 .res.fail{min-width:0;padding:4px 9px 4px 4px;background:var(--ink);color:var(--paper)}
 .res.error .res-mark{border-style:dashed}
+.res.mixed .res-mark{background:linear-gradient(90deg,currentColor 50%,transparent 50%)}
+.res.mixed .res-mark svg{display:none}
 .res.pending,.res.skip,.res.none{color:var(--muted)}
 .lat{margin-left:12px;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:20px}
@@ -244,6 +246,7 @@ progress::-moz-progress-bar{background:var(--ink)}
 .task-item .dots{display:flex;gap:6px;margin-top:8px}
 .task-item .dots i{width:9px;height:9px;border-radius:50%;background:var(--muted)}
 .task-item .dots i.pass{background:var(--ink)}
+.task-item .dots i.mixed{background:linear-gradient(90deg,var(--ink) 50%,var(--muted) 50%)}
 .task-item .dots i.fail{border-radius:0}
 
 /* ---------- Tasks ---------- */
@@ -406,6 +409,8 @@ progress::-moz-progress-bar{background:var(--ink)}
 .g-signal{display:inline-flex;align-items:flex-end;gap:3px;height:18px;margin-right:12px;vertical-align:middle}
 .g-signal i{width:5px;background:var(--line)}
 .g-signal i.on{background:var(--ink)}
+.g-signal i.half{background:linear-gradient(to top,var(--ink) 50%,var(--line) 50%)}
+.g-marks td b small{font-size:11px;font-weight:400;color:var(--muted)}
 .g-slips{font-size:13px;line-height:1.6}
 .g-slips b{font-weight:600}
 .g-gauges{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:20px}
@@ -444,6 +449,7 @@ progress::-moz-progress-bar{background:var(--ink)}
 .g-field{flex:1 1 260px;min-width:0}
 .g-field .field-label{margin-top:0}
 .g-field select{width:100%}
+.g-field-try{flex:0 1 170px}
 .g-stopwatch{margin-left:auto;font-size:28px;line-height:42px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
 .g-chats{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:20px}
 .g-chat{display:grid;grid-template-rows:auto 1fr;min-height:230px;background:var(--paper);border:1px solid var(--line)}
@@ -462,6 +468,19 @@ progress::-moz-progress-bar{background:var(--ink)}
 .g-typing i:nth-child(2){animation-delay:.15s}
 .g-typing i:nth-child(3){animation-delay:.3s}
 @keyframes g-typing{0%,60%,100%{opacity:.3;transform:none}30%{opacity:1;transform:translateY(-3px)}}
+.g-verdicts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:20px}
+.g-verdict{display:grid;align-content:start;gap:14px}
+.g-verdict-head{display:flex;align-items:center;gap:10px}
+.g-verdict-head h3{font-size:17px}
+.g-decision{justify-self:start;padding:9px 14px;font-size:13px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;border:2px solid var(--ink)}
+.g-decision.g-clear{color:var(--paper);background:var(--ink)}
+.g-margin{display:grid;gap:8px;margin:4px 0}
+.g-margin-track{position:relative;height:30px;border-bottom:1px solid var(--ink)}
+.g-margin-mid{position:absolute;top:0;bottom:-6px;left:50%;width:0;border-left:1.5px dashed var(--muted)}
+.g-margin-band{position:absolute;top:7px;bottom:7px;min-width:3px;background:var(--ink);opacity:.18}
+.g-margin-dot{position:absolute;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:var(--ink);border:2px solid var(--surface)}
+.g-margin-ends{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;font-size:11.5px;color:var(--muted)}
+.g-margin-ends span:last-child{text-align:right}
 .g-langs{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:20px}
 .g-lang{display:grid;align-content:start;gap:12px}
 .g-bubble{position:relative;justify-self:start;max-width:100%;margin-bottom:8px;padding:12px 16px;font-size:16px;line-height:1.5;color:var(--paper);background:var(--ink)}
@@ -474,6 +493,7 @@ progress::-moz-progress-bar{background:var(--ink)}
 .g-dots{display:flex;flex-wrap:wrap;gap:5px}
 .g-dots i{width:10px;height:10px;border-radius:50%;border:1.5px solid var(--ink)}
 .g-dots i.on{background:var(--ink)}
+.g-dots i.half{background:linear-gradient(90deg,var(--ink) 50%,transparent 50%)}
 .g-tools{display:flex;justify-content:flex-end;margin-bottom:12px}
 .g-specs-wrap{border:1px solid var(--line)}
 .g-specs{width:100%;border-collapse:collapse;font-size:14px;background:var(--surface)}

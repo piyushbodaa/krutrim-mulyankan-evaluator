@@ -143,6 +143,87 @@
         "small_sample": {
           "title": "Small Sample",
           "type": "boolean"
+        },
+        "median_latency_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Median Latency S"
+        },
+        "task_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Count"
+        },
+        "tries_per_task": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tries Per Task"
+        },
+        "always_correct": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Always Correct"
+        },
+        "sometimes_correct": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sometimes Correct"
+        },
+        "never_correct": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Never Correct"
+        },
+        "success_ci_method": {
+          "default": "wilson",
+          "enum": [
+            "wilson",
+            "task_bootstrap"
+          ],
+          "title": "Success Ci Method",
+          "type": "string"
         }
       },
       "required": [
@@ -402,6 +483,11 @@
         "runner_id": {
           "title": "Runner Id",
           "type": "string"
+        },
+        "repeat_index": {
+          "default": 0,
+          "title": "Repeat Index",
+          "type": "integer"
         },
         "configuration_id": {
           "title": "Configuration Id",
@@ -787,6 +873,11 @@
           "title": "Seed",
           "type": "integer"
         },
+        "repeats": {
+          "default": 1,
+          "title": "Repeats",
+          "type": "integer"
+        },
         "software_version": {
           "title": "Software Version",
           "type": "string"
@@ -1083,13 +1174,155 @@
       ],
       "title": "TestedConfiguration",
       "type": "object"
+    },
+    "Verdict": {
+      "properties": {
+        "metric": {
+          "enum": [
+            "accuracy",
+            "speed"
+          ],
+          "title": "Metric",
+          "type": "string"
+        },
+        "capability_track": {
+          "title": "Capability Track",
+          "type": "string"
+        },
+        "runner_a": {
+          "title": "Runner A",
+          "type": "string"
+        },
+        "runner_b": {
+          "title": "Runner B",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "clearly_different",
+            "too_close_to_call"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        },
+        "favours": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Favours"
+        },
+        "estimate": {
+          "title": "Estimate",
+          "type": "number"
+        },
+        "estimate_unit": {
+          "enum": [
+            "percentage_points",
+            "times_as_long"
+          ],
+          "title": "Estimate Unit",
+          "type": "string"
+        },
+        "ci_95": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ci 95"
+        },
+        "p_value": {
+          "title": "P Value",
+          "type": "number"
+        },
+        "p_value_adjusted": {
+          "title": "P Value Adjusted",
+          "type": "number"
+        },
+        "tasks": {
+          "title": "Tasks",
+          "type": "integer"
+        },
+        "a_better": {
+          "title": "A Better",
+          "type": "integer"
+        },
+        "b_better": {
+          "title": "B Better",
+          "type": "integer"
+        },
+        "tied": {
+          "title": "Tied",
+          "type": "integer"
+        },
+        "tries_per_task": {
+          "title": "Tries Per Task",
+          "type": "integer"
+        },
+        "alpha": {
+          "default": 0.05,
+          "title": "Alpha",
+          "type": "number"
+        },
+        "method": {
+          "default": "Exact two-sided sign test over paired tasks; 95% paired bootstrap range (4000 resamples).",
+          "title": "Method",
+          "type": "string"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric",
+        "capability_track",
+        "runner_a",
+        "runner_b",
+        "verdict",
+        "favours",
+        "estimate",
+        "estimate_unit",
+        "ci_95",
+        "p_value",
+        "p_value_adjusted",
+        "tasks",
+        "a_better",
+        "b_better",
+        "tied",
+        "tries_per_task",
+        "explanation"
+      ],
+      "title": "Verdict",
+      "type": "object"
     }
   },
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": "1.0",
-      "default": "1.0",
+      "default": "1.1",
+      "enum": [
+        "1.0",
+        "1.1"
+      ],
       "title": "Schema Version",
       "type": "string"
     },
@@ -1118,6 +1351,14 @@
         "$ref": "#/$defs/Aggregate"
       },
       "title": "Aggregates",
+      "type": "array"
+    },
+    "verdicts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Verdict"
+      },
+      "title": "Verdicts",
       "type": "array"
     },
     "supported_tracks": {

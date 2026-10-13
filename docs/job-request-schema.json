@@ -41,6 +41,14 @@
       "title": "Seed",
       "type": "integer"
     },
+    "repeats": {
+      "default": 1,
+      "description": "Tries per task and adapter",
+      "maximum": 5,
+      "minimum": 1,
+      "title": "Repeats",
+      "type": "integer"
+    },
     "idempotency_key": {
       "pattern": "^[A-Za-z0-9_-]{8,100}$",
       "title": "Idempotency Key",

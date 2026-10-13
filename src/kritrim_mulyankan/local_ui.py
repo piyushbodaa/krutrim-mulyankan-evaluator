@@ -19,7 +19,7 @@ from kritrim_mulyankan.app_observations import AppObservation, AppObservationRun
 from kritrim_mulyankan.comparisons import ComparisonBundle, ConfigurationRegistry, NewConfiguration
 from kritrim_mulyankan.engine import run_suite
 from kritrim_mulyankan.evidence_archive import evidence_detail, list_evidence
-from kritrim_mulyankan.export import result_export, write_export
+from kritrim_mulyankan.export import explanation_key, result_export, write_export
 from kritrim_mulyankan.graders.deterministic import strict_json
 from kritrim_mulyankan.job_routes import get_route, post_route
 from kritrim_mulyankan.jobs import JobManager
@@ -234,7 +234,7 @@ class PilotService:
                 raise ValueError("only local mock/app-observation pilot results are available here")
             payload = result_export(store, run_id, include_outputs=outputs).model_dump(mode="json")
             details = {
-                record.task_id + ":" + record.runner: record.grade_details
+                explanation_key(record): record.grade_details
                 for record in store.results_for_run(run_id)
             }
         if outputs:

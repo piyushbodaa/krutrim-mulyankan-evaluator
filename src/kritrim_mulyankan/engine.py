@@ -1,4 +1,8 @@
-"""Runs every (task, runner) pair in a suite, grades it, saves raw artifacts and records results."""
+"""Runs every (task, runner) pair in a suite, grades it, saves raw artifacts and records results.
+
+With repeats, the whole grid runs again as complete rounds, so a run that is cancelled or hits its
+budget part-way still holds whole rounds that compare like with like.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +29,8 @@ from kritrim_mulyankan.runners.base import RunContext, Runner, RunOutput, Usage
 from kritrim_mulyankan.settings import Settings
 from kritrim_mulyankan.store import ResultRecord, RunRecord, Store
 from kritrim_mulyankan.suite import Suite, Task
+
+MAX_REPEATS = 10
 
 
 @dataclass(frozen=True)
@@ -71,14 +77,19 @@ class Preflight:
         return not self.problems
 
 
-def preflight(tasks: list[Task], runners: list[Runner], cap: float) -> Preflight:
+def preflight(
+    tasks: list[Task], runners: list[Runner], cap: float, *, repeats: int = 1
+) -> Preflight:
     """Check everything that can be checked without calling anything: runner readiness (keys,
-    prices), that every attempt has a worst-case estimate, and that the total fits the cap."""
+    prices), that every attempt has a worst-case estimate, and that the total of every try of
+    every attempt fits the cap."""
     estimates = estimate(tasks, runners)
     by_id = {t.id: t for t in tasks}
     problems: list[str] = []
     if not math.isfinite(cap) or cap < 0:
         problems.append("budget cap must be finite and nonnegative")
+    if not 1 <= repeats <= MAX_REPEATS:
+        problems.append(f"repeats must be between 1 and {MAX_REPEATS}")
     warnings: list[str] = []
     for runner in runners:
         own = runner.problems()
@@ -106,20 +117,22 @@ def preflight(tasks: list[Task], runners: list[Runner], cap: float) -> Preflight
             f"{len(over_task_budget)} attempt(s) exceed their task's budget_usd at worst case and "
             "will be skipped (lower max_output_tokens or raise budget_usd)"
         )
-    worst = sum(
+    worst = repeats * sum(
         e.cost_usd for e in estimates if e.cost_usd is not None and e not in over_task_budget
     )
     if worst > cap:
         problems.append(
             f"worst-case cost ${worst:.4f} exceeds the ${cap:.2f} cap; raise --max-usd, "
-            "lower max_output_tokens, or run fewer tasks or runners"
+            "lower max_output_tokens, or run fewer tasks, runners or repeats"
         )
     return Preflight(estimates, worst, problems, warnings)
 
 
-def derive_seed(run_seed: int, task_id: str) -> int:
-    """Per-task seed: the same for every runner, so all systems get the same sampling seed."""
-    digest = hashlib.sha256(f"{run_seed}:{task_id}".encode()).digest()
+def derive_seed(run_seed: int, task_id: str, repeat_index: int = 0) -> int:
+    """Per-task seed, the same for every runner so all systems get the same sampling seed. Each
+    later try gets its own seed; reusing one would make a seeded model repeat itself."""
+    key = f"{run_seed}:{task_id}" if repeat_index == 0 else f"{run_seed}:{task_id}:{repeat_index}"
+    digest = hashlib.sha256(key.encode()).digest()
     return int.from_bytes(digest[:4], "big")
 
 
@@ -151,6 +164,7 @@ def run_suite(
     store: Store,
     settings: Settings,
     seed: int = 0,
+    repeats: int = 1,
     max_usd: float | None = None,
     task_ids: list[str] | None = None,
     judge: Judge | None = None,
@@ -163,7 +177,7 @@ def run_suite(
     if len({r.name for r in runners}) != len(runners) or not runners:
         raise PreflightError(["runners must be nonempty and unique"])
     cap = settings.max_usd if max_usd is None else max_usd
-    check = preflight(tasks, runners, cap)
+    check = preflight(tasks, runners, cap, repeats=repeats)
     if not check.ok:
         raise PreflightError(check.problems)
     run_id, run_dir = new_run_dir(settings.runs_dir, datetime.now())
@@ -214,6 +228,7 @@ def run_suite(
         ],
         "runners": [{"spec": r.name, **r.configuration()} for r in runners],
         "seed": seed,
+        "repeats": repeats,
         "max_usd": cap,
         "usd_to_inr": settings.usd_to_inr,
         "mj_version": __version__,
@@ -231,6 +246,7 @@ def run_suite(
             suite_name=suite.name,
             suite_version=suite.version,
             seed=seed,
+            repeats=repeats,
             runners=[r.name for r in runners],
             max_usd=cap,
             usd_to_inr=settings.usd_to_inr,
@@ -247,72 +263,78 @@ def run_suite(
     try:
         if on_start:
             on_start(run_id)
-        for task in tasks:
-            prompt = task.render_prompt()
-            grader = make_grader(
+        prompts = {task.id: task.render_prompt() for task in tasks}
+        graders = {
+            task.id: make_grader(
                 task, judge=judge, fixture_base=suite.path.parent if suite.path else None
             )
-            task_seed = derive_seed(seed, task.id)
-            for runner in runners:
-                est = runner.estimate_cost_usd(task, prompt)
-                skip = None
+            for task in tasks
+        }
+        for repeat_index, task, runner in (
+            (r, t, n) for r in range(repeats) for t in tasks for n in runners
+        ):
+            prompt, grader = prompts[task.id], graders[task.id]
+            task_seed = derive_seed(seed, task.id, repeat_index)
+            est = runner.estimate_cost_usd(task, prompt)
+            skip = None
+            if cancel_event and cancel_event.is_set():
+                skip = "Cancelled before this attempt; no adapter call made"
+                status = "cancelled"
+            elif task.budget_usd is not None and est is not None and est > task.budget_usd:
+                skip = f"estimate ${est:.4f} exceeds task budget ${task.budget_usd:.4f}"
+            elif reserved + (est or 0.0) > cap:
+                skip = f"run budget cap ${cap:.2f} reached (spent ${spent:.4f})"
+                status = "budget_exceeded"
+
+            if skip:
+                out, latency, run_status, grade = (
+                    RunOutput(error=skip, usage=Usage(cost_usd=0)),
+                    None,
+                    "skipped",
+                    None,
+                )
+            else:
+                if on_attempt:
+                    on_attempt(task.id, runner.name)
+                out, latency = _attempt(runner, task, prompt, suite, task_seed, cancel_event)
                 if cancel_event and cancel_event.is_set():
-                    skip = "Cancelled before this attempt; no adapter call made"
                     status = "cancelled"
-                elif task.budget_usd is not None and est is not None and est > task.budget_usd:
-                    skip = f"estimate ${est:.4f} exceeds task budget ${task.budget_usd:.4f}"
-                elif reserved + (est or 0.0) > cap:
-                    skip = f"run budget cap ${cap:.2f} reached (spent ${spent:.4f})"
-                    status = "budget_exceeded"
+                run_status = "error" if out.error else "ok"
+                # Account before grading so a broken grader never loses model usage/cost.
+                grade = None
+                if run_status == "ok":
+                    try:
+                        grade = grader.grade(task, out.output)
+                    except Exception as exc:
+                        grade = Grade(
+                            grader=grader.name,
+                            status="error",
+                            details={"error": redact(f"{type(exc).__name__}: {exc}")},
+                        )
+            if (
+                out.usage.cost_usd is None
+                and est == 0
+                and runner.configuration().get("evaluation_mode") != "manual_app"
+                and runner.kind != "harness"
+            ):
+                out.usage.cost_usd = 0  # explicitly zero-priced local/mock execution
+            spent += out.usage.cost_usd or 0
+            reserved += out.usage.cost_usd if out.usage.cost_usd is not None else (est or 0)
+            uncertain_cost |= out.usage.cost_usd is None
+            if reserved > cap:
+                status = "budget_exceeded"
 
-                if skip:
-                    out, latency, run_status, grade = (
-                        RunOutput(error=skip, usage=Usage(cost_usd=0)),
-                        None,
-                        "skipped",
-                        None,
-                    )
-                else:
-                    if on_attempt:
-                        on_attempt(task.id, runner.name)
-                    out, latency = _attempt(runner, task, prompt, suite, task_seed, cancel_event)
-                    if cancel_event and cancel_event.is_set():
-                        status = "cancelled"
-                    run_status = "error" if out.error else "ok"
-                    # Account before grading so a broken grader never loses model usage/cost.
-                    grade = None
-                    if run_status == "ok":
-                        try:
-                            grade = grader.grade(task, out.output)
-                        except Exception as exc:
-                            grade = Grade(
-                                grader=grader.name,
-                                status="error",
-                                details={"error": redact(f"{type(exc).__name__}: {exc}")},
-                            )
-                if (
-                    out.usage.cost_usd is None
-                    and est == 0
-                    and runner.configuration().get("evaluation_mode") != "manual_app"
-                    and runner.kind != "harness"
-                ):
-                    out.usage.cost_usd = 0  # explicitly zero-priced local/mock execution
-                spent += out.usage.cost_usd or 0
-                reserved += out.usage.cost_usd if out.usage.cost_usd is not None else (est or 0)
-                uncertain_cost |= out.usage.cost_usd is None
-                if reserved > cap:
-                    status = "budget_exceeded"
-
-                record = _record(
-                    run_id, task, runner, task_seed, run_status, out, latency, grade, settings
-                )
-                record.artifact_path = str(
-                    _save_artifact(run_dir, task, runner, prompt, out, record, grade)
-                )
-                store.add_result(record)
-                summary.results.append(record)
-                if on_result:
-                    on_result(record)
+            record = _record(
+                run_id, task, runner, task_seed, run_status, out, latency, grade, settings
+            )
+            record.repeat_index = repeat_index
+            record.artifact_path = str(
+                _save_artifact(run_dir, task, runner, prompt, out, record, grade)
+            )
+            store.add_result(record)
+            summary.results.append(record)
+            if on_result:
+                on_result(record)
     except BaseException:
         status = "failed"
         raise
@@ -428,12 +450,15 @@ def _save_artifact(
     suffix = hashlib.sha256(runner.name.encode()).hexdigest()[:10]
     # Preserve familiar fake paths; disambiguate provider specs that sanitize to the same slug.
     directory = slug(runner.name) if runner.kind == "fake" else f"{slug(runner.name)}-{suffix}"
-    path = run_dir / directory / f"{slug(task.id)}.json"
+    # The first try keeps the familiar name; later tries add their 0-based number.
+    name = slug(task.id) + (f".repeat-{record.repeat_index}" if record.repeat_index else "")
+    path = run_dir / directory / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "task": {"id": task.id, "version": task.version, "hash": record.task_hash},
         "runner": {"spec": runner.name, "kind": runner.kind},
         "seed": record.seed,
+        "repeat_index": record.repeat_index,
         "status": record.status,
         "latency_s": record.latency_s,
         "prompt": prompt,

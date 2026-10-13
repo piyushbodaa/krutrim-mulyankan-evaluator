@@ -123,20 +123,30 @@ function gMeter(passed, total, text, className) {
   meter.setAttribute('aria-label', text);
   return meter;
 }
-// Phone-signal bars: one bar per task, filled when that task was answered correctly.
-function gSignal(passed, total, text) {
-  const signal = gMeter(passed, total, text, 'g-signal');
-  for (let index = 0; index < Math.min(total, 12); index++) {
-    const bar = node('i', undefined, index < Math.round(passed * Math.min(total, 12) / total) ? 'on' : '');
-    bar.style.height = Math.round(30 + 70 * (index + 1) / Math.min(total, 12)) + '%';
+// Phone-signal bars: one bar per task, full when right on every try, half when right on some.
+function gSignal(passed, total, text, sometimes = 0) {
+  const signal = gMeter(passed, total, text, 'g-signal'), shown = Math.min(total, 12), scale = shown / Math.max(total, 1);
+  const full = Math.round(passed * scale), half = Math.round((passed + sometimes) * scale) - full;
+  for (let index = 0; index < shown; index++) {
+    const bar = node('i', undefined, index < full ? 'on' : index < full + half ? 'half' : '');
+    bar.style.height = Math.round(30 + 70 * (index + 1) / shown) + '%';
     signal.append(bar);
   }
   return signal;
 }
-function gDots(passed, total, text) {
+function gDots(passed, total, text, sometimes = 0) {
   const dots = gMeter(passed, total, text, 'g-dots');
-  for (let index = 0; index < total; index++) dots.append(node('i', undefined, index < passed ? 'on' : ''));
+  for (let index = 0; index < total; index++) dots.append(node('i', undefined, index < passed ? 'on' : index < passed + sometimes ? 'half' : ''));
   return dots;
+}
+function gMarks(tally) {
+  const marks = node('b', tally.passed + '/' + tally.total);
+  if (tally.sometimes) marks.append(node('small', ' +' + tally.sometimes + ' sometimes'));
+  return marks;
+}
+function gPercent(value) { return value === null || value === undefined ? '—' : Math.round(value * 100) + '%'; }
+function gPair(data, a, b, metric) {
+  return data.verdicts.find(v => v.metric === metric && ((v.runner_a === a && v.runner_b === b) || (v.runner_a === b && v.runner_b === a))) || null;
 }
 
 /* ---------- Data: one record per system, from the board's own reading of the payload ---------- */
@@ -149,9 +159,15 @@ function glanceData(payload, adapters) {
   for (const code of present) {
     if (!GLANCE_LANGUAGES.some(item => item.codes.includes(code))) languages.push({codes: [code], name: code, native: code, sample: null});
   }
-  const tally = rows => ({passed: rows.filter(row => outcome(row).key === 'pass').length, total: rows.length});
+  // Task-level counts: right on every try, right on some tries, out of the tasks this system ran.
+  const tally = (system, taskIds) => {
+    const stats = taskIds.map(id => system.tasks.get(id)).filter(Boolean);
+    return {passed: stats.filter(stat => stat.key === 'pass').length, sometimes: stats.filter(stat => stat.key === 'mixed').length, total: stats.length};
+  };
+  const inSkill = key => ids.filter(id => (firstRow(id).category || 'other') === key);
+  const inLanguage = item => ids.filter(id => item.codes.includes(firstRow(id).language));
   const systems = boardSystems(payload, adapters).map((system, index) => {
-    const waits = system.rows.map(row => row.latency_s).filter(value => typeof value === 'number');
+    const stats = [...system.tasks.values()], waits = stats.map(stat => stat.wait).filter(value => typeof value === 'number');
     return {
       ...system,
       index,
@@ -161,16 +177,18 @@ function glanceData(payload, adapters) {
       waits,
       fastest: waits.length ? Math.min(...waits) : null,
       slowest: waits.length ? Math.max(...waits) : null,
-      totalTime: waits.length && waits.length === system.rows.length ? waits.reduce((sum, value) => sum + value, 0) : null,
-      wrong: system.rows.filter(row => outcome(row).key === 'fail'),
-      errors: system.rows.filter(row => outcome(row).key === 'error'),
-      bySkill: Object.fromEntries(categories.map(key => [key, tally(system.rows.filter(row => (row.category || 'other') === key))])),
-      byLanguage: languages.map(item => tally(system.rows.filter(row => item.codes.includes(row.language)))),
+      totalTime: waits.length && waits.length === stats.length ? waits.reduce((sum, value) => sum + value, 0) : null,
+      wrong: stats.filter(stat => stat.key === 'fail').map(stat => stat.rows[0]),
+      shaky: stats.filter(stat => stat.key === 'mixed').map(stat => stat.rows[0]),
+      errors: stats.filter(stat => stat.key === 'error').map(stat => stat.rows[0]),
+      bySkill: Object.fromEntries(categories.map(key => [key, tally(system, inSkill(key))])),
+      byLanguage: languages.map(item => tally(system, inLanguage(item))),
     };
   });
   const tracks = new Set(systems.map(system => system.track));
   const mock = [...tracks].every(track => track === 'mock_validation' || track === 'mock');
-  return {payload, ids, firstRow, categories, languages, systems, tracks, mock};
+  const tries = Math.max(1, ...systems.map(system => system.tries));
+  return {payload, ids, firstRow, categories, languages, systems, tracks, mock, tries, verdicts: payload.verdicts || []};
 }
 
 /* ---------- Sections ---------- */
@@ -196,23 +214,38 @@ function glanceHero(data) {
 }
 
 function glanceTakeaways(data) {
-  const {systems, ids, languages, firstRow} = data, total = ids.length, items = [];
+  const {systems, ids, languages, firstRow, tries} = data, total = ids.length, items = [];
   if (systems.length > 1 && total) {
-    const ranked = [...systems].sort((a, b) => b.passed - a.passed), high = ranked[0], low = ranked[ranked.length - 1], gap = high.passed - low.passed;
-    if (gap === 0) {
-      items.push({icon: 'target', title: 'Same score', text: `${systems.length === 2 ? 'Both' : 'All ' + systems.length} got ${high.passed} of ${total} tasks right.`});
-    } else if (total >= 10 && gap <= Math.max(1, Math.round(total / 20))) {
-      items.push({icon: 'target', title: 'Accuracy is close', text: `${high.short} got ${high.passed} and ${low.short} got ${low.passed} of ${total} right. Each task is worth about ${Math.round(100 / total)} marks out of 100, so a gap this small could change in a bigger test.`});
+    const score = system => tries > 1 ? system.accuracy ?? 0 : system.passed;
+    const ranked = [...systems].sort((a, b) => score(b) - score(a)), high = ranked[0], low = ranked[ranked.length - 1];
+    const marks = tries > 1
+      ? `${high.short} was right on ${gPercent(high.accuracy)} of tries and ${low.short} on ${gPercent(low.accuracy)}.`
+      : `${high.short} got ${high.passed} and ${low.short} got ${low.passed} of ${total} right.`;
+    const verdict = gPair(data, high.id, low.id, 'accuracy');
+    if (score(high) === score(low)) {
+      items.push({icon: 'target', title: 'Same score', text: tries > 1 ? marks : `${systems.length === 2 ? 'Both' : 'All ' + systems.length} got ${high.passed} of ${total} tasks right.`});
+    } else if (verdict) {
+      items.push(verdict.verdict === 'clearly_different'
+        ? {icon: 'target', title: 'A clear gap in accuracy', text: `${marks} The gap is too consistent to be luck.`}
+        : {icon: 'target', title: 'Accuracy: too close to call', text: `${marks} Each task is worth about ${Math.round(100 / total)} marks out of 100, and a gap this small could be luck.`});
     } else {
-      items.push({icon: 'target', title: 'A clear gap in accuracy', text: `${high.short} got ${high.passed} of ${total} right and ${low.short} got ${low.passed}.`});
+      items.push({icon: 'target', title: 'Accuracy is close', text: `${marks} Each task is worth about ${Math.round(100 / total)} marks out of 100.`});
     }
   }
   const timed = systems.filter(system => typeof system.median === 'number' && system.median > 0).sort((a, b) => a.median - b.median);
   if (timed.length > 1) {
-    const fast = timed[0], slow = timed[timed.length - 1], ratio = slow.median / fast.median;
-    items.push(ratio >= 1.5
-      ? {icon: 'gauge', title: 'Speed is not close', text: `${fast.short} usually answered in about ${gAbout(fast.median)}. ${slow.short} usually took about ${gAbout(slow.median)}, roughly ${gTimes(ratio)} as long.`}
-      : {icon: 'gauge', title: 'Similar speed', text: `Typical waits: ${gList(timed.map(system => system.short + ' about ' + gAbout(system.median)))}.`});
+    const fast = timed[0], slow = timed[timed.length - 1], verdict = gPair(data, fast.id, slow.id, 'speed');
+    const waits = `${fast.short} usually answered in about ${gAbout(fast.median)}; ${slow.short} usually took about ${gAbout(slow.median)}.`;
+    if (verdict) {
+      items.push(verdict.verdict === 'clearly_different' && verdict.favours
+        ? {icon: 'gauge', title: 'Speed: clearly different', text: `${waits} Task by task, ${slow.short} took roughly ${gTimes(verdict.estimate)} as long.`}
+        : {icon: 'gauge', title: 'Speed: too close to call', text: `${waits} The gap could be luck.`});
+    } else {
+      const ratio = slow.median / fast.median;
+      items.push(ratio >= 1.5
+        ? {icon: 'gauge', title: 'Speed is not close', text: `${waits} That is roughly ${gTimes(ratio)} as long.`}
+        : {icon: 'gauge', title: 'Similar speed', text: `Typical waits: ${gList(timed.map(system => system.short + ' about ' + gAbout(system.median)))}.`});
+    }
   }
   const slips = systems.flatMap(system => system.wrong);
   if (slips.length) {
@@ -245,15 +278,80 @@ function glanceTakeaways(data) {
   return items.length ? wrap : null;
 }
 
+// "Is the difference real?": each verdict as a third-umpire decision plus a margin-of-error line.
+// Position on the line is signed so that the right-hand side always means runner_a is ahead.
+function gMargin(v, name) {
+  let estimate, low, high;
+  if (v.metric === 'accuracy') {
+    estimate = v.estimate;
+    [low, high] = v.ci_95 || [estimate, estimate];
+  } else {
+    const sign = v.favours === v.runner_b ? -1 : 1, [first, last] = v.ci_95 || [v.estimate, v.estimate];
+    estimate = sign * Math.log(v.estimate);
+    [low, high] = sign > 0 ? [Math.log(first), Math.log(last)] : [-Math.log(last), -Math.log(first)];
+  }
+  const reach = 1.1 * Math.max(Math.abs(low), Math.abs(high), Math.abs(estimate), v.metric === 'accuracy' ? 10 : Math.log(2));
+  const at = value => 50 + value / reach * 50;
+  const line = node('div', undefined, 'g-margin'), track = node('div', undefined, 'g-margin-track'), band = node('i', undefined, 'g-margin-band');
+  const dot = node('b', undefined, 'g-margin-dot'), ends = node('div', undefined, 'g-margin-ends'), ahead = v.metric === 'accuracy' ? ' ahead' : ' faster';
+  band.style.left = at(Math.min(low, high)) + '%';
+  band.style.width = Math.max(at(Math.max(low, high)) - at(Math.min(low, high)), 0.6) + '%';
+  dot.style.left = at(estimate) + '%';
+  track.append(node('span', undefined, 'g-margin-mid'), band, dot);
+  ends.append(node('span', name(v.runner_b) + ahead), node('span', v.metric === 'accuracy' ? 'No gap' : 'Same speed'), node('span', name(v.runner_a) + ahead));
+  line.setAttribute('role', 'img');
+  line.setAttribute('aria-label', `Likely range ${low < 0 && high > 0 ? 'crosses' : 'does not cross'} the middle line`);
+  line.append(track, ends);
+  return line;
+}
+function gVerdictText(v, name) {
+  const a = name(v.runner_a), b = name(v.runner_b);
+  if (v.metric === 'accuracy') {
+    const parts = [];
+    if (v.a_better) parts.push(`${a} did better on ${gPlural(v.a_better, 'task')}`);
+    if (v.b_better) parts.push(v.a_better ? `${b} on ${v.b_better}` : `${b} did better on ${gPlural(v.b_better, 'task')}`);
+    const split = parts.length ? parts.join(' and ') + (v.tied ? `, and ${v.tied} were tied.` : '.') : `They matched on all ${gPlural(v.tasks, 'task')}.`;
+    if (v.verdict === 'clearly_different') return `${split} That is too one-sided to be luck: ${name(v.favours)} is ahead by about ${Math.round(Math.abs(v.estimate))} marks out of 100.`;
+    if (!v.ci_95) return `${split} That could easily be luck.`;
+    const side = value => value < 0 ? `${b} ahead by ${Math.round(-value)}` : value > 0 ? `${a} ahead by ${Math.round(value)}` : 'no gap';
+    return `${split} That could easily be luck: the true gap could be anywhere from ${side(v.ci_95[0])} to ${side(v.ci_95[1])} marks out of 100.`;
+  }
+  if (!v.favours) return `Their typical waits matched on all ${gPlural(v.tasks, 'task')}.`;
+  const fast = name(v.favours), slow = v.favours === v.runner_a ? b : a, wins = v.favours === v.runner_a ? v.a_better : v.b_better;
+  const split = wins === v.tasks ? `${fast} was faster on all ${gPlural(v.tasks, 'task')}.` : `${fast} was faster on ${wins} of ${gPlural(v.tasks, 'task')}.`;
+  if (v.verdict !== 'clearly_different') return `${split} That could be luck, so we can't say which is faster yet.`;
+  const range = v.ci_95 ? ` (likely between ${v.ci_95[0].toFixed(1)} and ${v.ci_95[1].toFixed(1)} times)` : '';
+  return `${split} ${slow} usually took about ${gTimes(v.estimate)} as long${range}.`;
+}
+function glanceVerdicts(data) {
+  const present = id => data.systems.some(system => system.id === id);
+  const verdicts = data.verdicts.filter(v => present(v.runner_a) && present(v.runner_b));
+  if (!verdicts.length) return null;
+  const section = gSection('Third umpire', 'Is the difference real?', 'With a small test, a gap can be plain luck. Like a third umpire, we only give a decision when the replay is clear. The shaded band shows where the true gap probably lies; if it crosses the middle line, it is too close to call.', 'verdicts');
+  const grid = node('div', undefined, 'g-verdicts'), name = id => data.systems.find(system => system.id === id)?.short || id;
+  for (const v of verdicts) {
+    const clear = v.verdict === 'clearly_different', card = node('article', undefined, 'card g-verdict'), head = node('div', undefined, 'g-verdict-head');
+    head.append(gIcon(v.metric === 'accuracy' ? 'target' : 'gauge'), node('h3', (v.metric === 'accuracy' ? 'Accuracy' : 'Speed') + (data.systems.length > 2 ? ': ' + name(v.runner_a) + ' vs ' + name(v.runner_b) : '')));
+    const p = v.p_value_adjusted < 0.001 ? '< 0.001' : '= ' + v.p_value_adjusted.toFixed(2);
+    card.append(head, node('p', clear ? 'Clearly different' : 'Too close to call', 'g-decision' + (clear ? ' g-clear' : '')), gMargin(v, name),
+      node('p', gVerdictText(v, name)), node('p', `Exact sign test over ${gPlural(v.tasks, 'task')}${v.tries_per_task > 1 ? ', ' + v.tries_per_task + ' tries each' : ''} · p ${p}`, 'g-note'));
+    grid.append(card);
+  }
+  section.append(grid);
+  return section;
+}
+
 function glanceReportCards(data) {
-  const section = gSection('Report cards', 'How many did each one get right?', 'Marks by subject, like a school report card. The bars work like phone signal: one bar for each task in that subject, filled when the answer was correct.', 'marks');
+  const repeated = data.tries > 1;
+  const section = gSection('Report cards', 'How many did each one get right?', 'Marks by subject, like a school report card. The bars work like phone signal: one bar for each task in that subject, filled when the answer was correct.' + (repeated ? ` Each task was tried ${data.tries} times: a full bar means right every time, a half bar right on some tries.` : ''), 'marks');
   const cards = node('div', undefined, 'g-cards');
   for (const system of data.systems) {
     const card = node('article', undefined, 'card g-card'), id = node('div', undefined, 'g-id'), names = node('div');
     names.append(node('h3', system.short), node('p', system.kind[0].replace(/^./, letter => letter.toUpperCase()) + (system.version ? ' · version ' + system.version : '')), node('p', 'AI model inside: ' + (system.model || system.id), 'g-model'));
     id.append(gAvatar(system), names);
     const score = node('div', undefined, 'g-score');
-    score.append(node('strong', String(system.passed)), node('span', '/' + system.total + ' correct'), node('span', system.total ? Math.round(system.passed / system.total * 100) + '%' : '—', 'g-pct'));
+    if (system.tries > 1) score.append(node('strong', gPercent(system.accuracy)), node('span', 'of tries right'), node('span', `${system.passed}/${system.total} every time`, 'g-pct'));
+    else score.append(node('strong', String(system.passed)), node('span', '/' + system.total + ' correct'), node('span', system.total ? Math.round(system.passed / system.total * 100) + '%' : '—', 'g-pct'));
     const table = node('table', undefined, 'g-marks'), thead = node('thead'), head = node('tr'), body = node('tbody');
     table.append(node('caption', system.short + ': marks by subject', 'sr-only'));
     for (const text of ['Subject', 'Marks']) {
@@ -268,18 +366,18 @@ function glanceReportCards(data) {
       subject.scope = 'row';
       name.append(gIcon(skill.icon), node('span', skill.name));
       subject.append(name);
-      marks.append(gSignal(tally.passed, tally.total, `${tally.passed} of ${tally.total} correct`), node('b', tally.passed + '/' + tally.total));
+      marks.append(gSignal(tally.passed, tally.total, `${tally.passed} of ${tally.total} right every time` + (tally.sometimes ? `, ${tally.sometimes} sometimes` : ''), tally.sometimes), gMarks(tally));
       row.append(subject, marks);
       body.append(row);
     }
     table.append(thead, body);
     const slips = node('p', undefined, 'g-slips');
-    if (!system.wrong.length && !system.errors.length) slips.append(node('b', 'Got every task right.'));
-    if (system.wrong.length) slips.append(node('b', 'Got wrong: '), document.createTextNode(system.wrong.map(row => gTitle(row.task_id)).join('; ')));
-    if (system.errors.length) {
-      if (system.wrong.length) slips.append(document.createElement('br'));
-      slips.append(node('b', 'Could not finish: '), document.createTextNode(system.errors.map(row => gTitle(row.task_id)).join('; ')));
-    }
+    const lines = [[system.tries > 1 ? 'Never right: ' : 'Got wrong: ', system.wrong], ['Right only sometimes: ', system.shaky], ['Could not finish: ', system.errors]].filter(([, rows]) => rows.length);
+    if (!lines.length) slips.append(node('b', system.tries > 1 ? 'Right on every try of every task.' : 'Got every task right.'));
+    lines.forEach(([label, rows], index) => {
+      if (index) slips.append(document.createElement('br'));
+      slips.append(node('b', label), document.createTextNode(rows.map(row => gTitle(row.task_id)).join('; ')));
+    });
     card.append(id, score, table, slips);
     cards.append(card);
   }
@@ -369,16 +467,16 @@ function glanceSpeed(data) {
   if (waited.length) {
     const block = node('div', undefined, 'g-block'), list = node('div', undefined, 'g-waits');
     const ticks = axisTicks(Math.max(...waited.flatMap(system => system.waits))), top = ticks[ticks.length - 1];
-    block.append(node('h3', 'Every wait, task by task'), node('p', 'Each dot is one task. A tight cluster means the wait is predictable; a wide spread means it changes from task to task. A cross marks a wrong answer.', 'g-note'));
+    block.append(node('h3', 'Every wait, task by task'), node('p', 'Each dot is one task' + (data.tries > 1 ? ', at its middle wait across tries' : '') + '. A tight cluster means the wait is predictable; a wide spread means it changes from task to task. A cross marks a wrong answer.', 'g-note'));
     for (const system of waited) {
       const row = node('div', undefined, 'g-wait'), strip = node('div', undefined, 'g-strip');
       strip.setAttribute('role', 'img');
       strip.setAttribute('aria-label', `${system.short}: waits from ${gWait(system.fastest)} to ${gWait(system.slowest)}`);
-      for (const result of system.rows) {
-        if (typeof result.latency_s !== 'number') continue;
-        const wrong = outcome(result).key === 'fail', dot = node('i', undefined, wrong ? 'fail' : '');
-        dot.style.left = (top > 0 ? result.latency_s / top * 100 : 0) + '%';
-        dot.title = gTitle(result.task_id) + ' · ' + gWait(result.latency_s) + (wrong ? ' · wrong answer' : '');
+      for (const stat of system.tasks.values()) {
+        if (typeof stat.wait !== 'number') continue;
+        const wrong = stat.key === 'fail', dot = node('i', undefined, wrong ? 'fail' : '');
+        dot.style.left = (top > 0 ? stat.wait / top * 100 : 0) + '%';
+        dot.title = gTitle(stat.rows[0].task_id) + ' · ' + gWait(stat.wait) + (wrong ? ' · wrong answer' : '');
         strip.append(dot);
       }
       const who = node('div', undefined, 'g-wait-who');
@@ -415,12 +513,23 @@ function glanceChat(data) {
     picker.append(group);
   }
   field.append(fieldLabel, picker);
+  const tryPicker = node('select');
+  tryPicker.id = 'glance-chat-try';
+  for (let index = 0; index < data.tries; index++) {
+    const option = node('option', `Try ${index + 1} of ${data.tries}`);
+    option.value = String(index);
+    tryPicker.append(option);
+  }
+  const tryField = node('div', undefined, 'g-field g-field-try'), tryLabel = node('label', 'Which try', 'field-label');
+  tryLabel.htmlFor = tryPicker.id;
+  tryField.append(tryLabel, tryPicker);
+  tryField.hidden = data.tries < 2;
   const ask = node('button', data.systems.length === 1 ? 'Ask' : data.systems.length === 2 ? 'Ask both' : 'Ask all', 'primary');
   const skip = node('button', 'Skip the wait', 'secondary'), watch = node('span', '0.0 s', 'g-stopwatch');
   ask.type = skip.type = 'button';
   skip.hidden = true;
   watch.setAttribute('aria-hidden', 'true');
-  controls.append(field, ask, skip, watch);
+  controls.append(field, tryField, ask, skip, watch);
   const windows = node('div', undefined, 'g-chats');
   const chats = data.systems.map(system => {
     const card = node('article', undefined, 'g-chat'), head = node('header', undefined, 'g-chat-head'), name = node('div');
@@ -474,7 +583,7 @@ function glanceChat(data) {
       typing.append(node('i'), node('i'), node('i'));
       chat.log.replaceChildren(question, typing);
       chat.status.textContent = 'typing…';
-      chat.row = chat.system.rows.find(row => row.task_id === id) || null;
+      chat.row = chat.system.rows.find(row => row.task_id === id && (row.repeat_index || 0) === Number(tryPicker.value)) || null;
       chat.done = false;
       const wait = typeof chat.row?.latency_s === 'number' ? chat.row.latency_s : 0;
       glance.chatTimers.push(setTimeout(() => reply(chat), wait * 1000));
@@ -508,7 +617,7 @@ function glanceLanguages(data) {
     card.append(heading, node('p', gPlural(count, 'task') + (item.sample ? ' · the bubble is an example, not a test question' : ''), 'g-note'));
     for (const system of data.systems) {
       const tally = system.byLanguage[index], row = node('div', undefined, 'g-lang-row'), who = node('div');
-      who.append(node('span', system.short, 'g-lang-name'), gDots(tally.passed, tally.total, `${tally.passed} of ${tally.total} correct`));
+      who.append(node('span', system.short, 'g-lang-name'), gDots(tally.passed, tally.total, `${tally.passed} of ${tally.total} right every time` + (tally.sometimes ? `, ${tally.sometimes} sometimes` : ''), tally.sometimes));
       row.append(gAvatar(system, true), who, node('b', tally.passed + '/' + tally.total));
       card.append(row);
     }
@@ -518,21 +627,29 @@ function glanceLanguages(data) {
   return section;
 }
 
+function gTallyText(tally) {
+  return `${tally.passed} of ${tally.total}` + (tally.sometimes ? ` (+${tally.sometimes} sometimes)` : '');
+}
 function glanceSpecs(data) {
   const {systems, ids, categories, languages} = data;
   const section = gSection('Side by side', systems.length > 1 ? 'Compare them like phones' : 'The key numbers', 'All the numbers in one table, the way phone shops compare models. A bar on the left marks a row where they differ.', 'specs');
   const groups = [
-    ['Results', [['Correct answers', system => `${system.passed} of ${system.total}` + (system.total ? ` (${Math.round(system.passed / system.total * 100)}%)` : '')]]],
+    ['Results', data.tries > 1 ? [
+      ['Share of tries right', system => gPercent(system.accuracy)],
+      ['Right every time', system => `${system.passed} of ${system.total} tasks`],
+      ['Right only sometimes', system => `${system.sometimes} of ${system.total} tasks`],
+    ] : [['Correct answers', system => `${system.passed} of ${system.total}` + (system.total ? ` (${Math.round(system.passed / system.total * 100)}%)` : '')]]],
     ['Speed', [
       ['Typical wait', system => gWait(system.median)],
       ['Fastest answer', system => gWait(system.fastest)],
       ['Slowest answer', system => gWait(system.slowest)],
       [`All ${gPlural(ids.length, 'task')}, back to back`, system => typeof system.totalTime === 'number' ? gClock(system.totalTime) : '—'],
     ]],
-    ['Subjects', categories.map(key => [gSkill(key).name, system => `${system.bySkill[key].passed} of ${system.bySkill[key].total}`])],
-    ['Languages', languages.length > 1 ? languages.map((item, index) => [item.name, system => `${system.byLanguage[index].passed} of ${system.byLanguage[index].total}`]) : []],
+    ['Subjects', categories.map(key => [gSkill(key).name, system => gTallyText(system.bySkill[key])])],
+    ['Languages', languages.length > 1 ? languages.map((item, index) => [item.name, system => gTallyText(system.byLanguage[index])]) : []],
     ['About', [
-      ['Got wrong', system => system.wrong.length ? system.wrong.map(row => gTitle(row.task_id)).join('; ') : 'Nothing'],
+      [data.tries > 1 ? 'Never right' : 'Got wrong', system => system.wrong.length ? system.wrong.map(row => gTitle(row.task_id)).join('; ') : 'Nothing'],
+      ...(data.tries > 1 ? [['Right only sometimes', system => system.shaky.length ? system.shaky.map(row => gTitle(row.task_id)).join('; ') : 'Nothing']] : []),
       ['AI model inside', system => system.model || system.id],
       ['What it is', system => system.kind[0].replace(/^./, letter => letter.toUpperCase()) + ' · ' + system.kind[2].toLowerCase()],
     ]],
@@ -604,7 +721,8 @@ function glanceFinePrint(data) {
   const oneTry = (payload.pilot?.conditions || []).some(text => /one attempt/i.test(text));
   const list = node('ul', undefined, 'g-fine');
   for (const text of [
-    `This is an early test: ${gPlural(ids.length, 'task')}${oneTry ? ', one try each' : ''}. A bigger test could change the picture.`,
+    `This is an early test: ${gPlural(ids.length, 'task')}${data.tries > 1 ? `, ${data.tries} tries each` : oneTry || data.tries === 1 ? ', one try each' : ''}. A bigger test could change the picture.`,
+    data.tries > 1 ? 'AI answers can change from one try to the next. A half bar or half dot marks a task answered correctly on some tries only.' : 'AI answers can change from one try to the next. Running each task several times shows how consistent a model is.',
     ids.length ? `Each task is worth about ${Math.round(100 / ids.length)} marks out of 100, so small gaps matter less than they look.` : '',
     'Wait times include starting up and sending the answer back, timed on the computer that ran the test. A chat app on your phone may feel different.',
     'Not a ranking. The tasks still need independent review before anyone treats these results as final.',
@@ -657,7 +775,7 @@ function drawGlance() {
     const takeaways = glanceTakeaways(data);
     if (takeaways) target.append(takeaways);
   }
-  for (const section of [glanceReportCards(data), glanceSpeed(data), glanceChat(data), glanceLanguages(data), glanceSpecs(data), glanceFinePrint(data)]) {
+  for (const section of [glanceVerdicts(data), glanceReportCards(data), glanceSpeed(data), glanceChat(data), glanceLanguages(data), glanceSpecs(data), glanceFinePrint(data)]) {
     if (section) target.append(section);
   }
 }

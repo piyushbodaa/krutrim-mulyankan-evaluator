@@ -2,7 +2,9 @@ from pathlib import Path
 
 import httpx2
 import pytest
+from typer.testing import CliRunner
 
+from kritrim_mulyankan.cli import app
 from kritrim_mulyankan.settings import Settings
 from kritrim_mulyankan.store import Store
 from kritrim_mulyankan.suite import Suite, load_suite
@@ -44,3 +46,28 @@ def no_network(monkeypatch):
         raise RuntimeError(f"network disabled in tests: {request.method} {request.url}")
 
     monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", refuse)
+
+
+@pytest.fixture
+def km(tmp_path, suites_dir, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base_env = {
+        "MJ_RUNS_DIR": str(tmp_path / "runs"),
+        "MJ_DB": str(tmp_path / "runs" / "results.db"),
+        "MJ_SUITES_DIR": str(suites_dir),
+        "MJ_PRICES": str(tmp_path / "prices.yaml"),
+        "COLUMNS": "250",
+        "TERM": "xterm-256color",  # Rich forces 80 columns when TERM=dumb.
+        # Hide any real credentials so results don't depend on the developer's machine.
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        **{k: None for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE",
+                             "OPENAI_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY",
+                             "OPENROUTER_API_KEY")},
+    }  # fmt: skip
+    runner = CliRunner()
+
+    def invoke(*args: str, env: dict | None = None):
+        return runner.invoke(app, list(args), env={**base_env, **(env or {})})
+
+    invoke.tmp_path = tmp_path
+    return invoke

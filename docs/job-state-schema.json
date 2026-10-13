@@ -34,6 +34,18 @@
           "default": null,
           "title": "Runner Id"
         },
+        "repeat_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repeat Index"
+        },
         "status": {
           "anyOf": [
             {
@@ -119,6 +131,14 @@
           "maximum": 2147483647,
           "minimum": 0,
           "title": "Seed",
+          "type": "integer"
+        },
+        "repeats": {
+          "default": 1,
+          "description": "Tries per task and adapter",
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Repeats",
           "type": "integer"
         },
         "idempotency_key": {

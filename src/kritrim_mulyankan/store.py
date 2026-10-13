@@ -9,7 +9,15 @@ from typing import Any
 
 from pydantic import BaseModel
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# Results columns as they stood in schema v1 and v2, before repeat runs.
+RESULT_COLUMNS_V2 = (
+    "id, run_id, task_id, task_version, task_hash, category, runner, runner_kind, seed, status, "
+    "output, error, latency_s, input_tokens, output_tokens, cost_usd, cost_inr, steps, "
+    "tool_calls, grader, grade_status, passed, score, grade_details, human_score, human_note, "
+    "artifact_path, created_at"
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -20,6 +28,7 @@ CREATE TABLE IF NOT EXISTS runs (
     suite_name      TEXT NOT NULL,
     suite_version   TEXT NOT NULL,
     seed            INTEGER NOT NULL,
+    repeats         INTEGER NOT NULL DEFAULT 1, -- tries per (task, runner)
     runners         TEXT NOT NULL,             -- JSON list of runner specs
     max_usd         REAL NOT NULL,
     spent_usd       REAL NOT NULL DEFAULT 0,
@@ -40,6 +49,7 @@ CREATE TABLE IF NOT EXISTS results (
     runner          TEXT NOT NULL,
     runner_kind     TEXT NOT NULL,
     seed            INTEGER NOT NULL,
+    repeat_index    INTEGER NOT NULL DEFAULT 0, -- 0-based try number
     status          TEXT NOT NULL,             -- ok | error | skipped
     output          TEXT,
     error           TEXT,
@@ -59,7 +69,7 @@ CREATE TABLE IF NOT EXISTS results (
     human_note      TEXT,
     artifact_path   TEXT,
     created_at      TEXT NOT NULL,
-    UNIQUE (run_id, task_id, runner)
+    UNIQUE (run_id, task_id, runner, repeat_index)
 );
 
 CREATE INDEX IF NOT EXISTS results_runner ON results (runner, task_id);
@@ -96,6 +106,7 @@ class RunRecord(BaseModel):
     spent_usd: float = 0.0
     reserved_usd: float = 0.0
     uncertain_cost: bool = False
+    repeats: int = 1
 
 
 class ResultRecord(BaseModel):
@@ -109,6 +120,7 @@ class ResultRecord(BaseModel):
     seed: int
     status: str
     created_at: str
+    repeat_index: int = 0
     output: str | None = None
     error: str | None = None
     latency_s: float | None = None
@@ -145,20 +157,25 @@ class Store:
             )
         if version == SCHEMA_VERSION:
             return  # Opening a current database for a read must not acquire a write lock.
-        migration = ""
-        if version == 1:
-            # One transaction: a failed migration rolls back without partial ALTERs.
-            migration = """
-            ALTER TABLE runs ADD COLUMN reserved_usd REAL NOT NULL DEFAULT 0;
-            ALTER TABLE runs ADD COLUMN uncertain_cost INTEGER NOT NULL DEFAULT 0;
-            ALTER TABLE results RENAME TO results_v1;
+        migration = restore = ""
+        if version in (1, 2):
+            # One transaction: a failed migration rolls back without partial ALTERs. v3 adds
+            # repeat runs; SQLite cannot change a UNIQUE constraint in place, so results are
+            # rebuilt and every earlier row becomes try 0.
+            if version == 1:
+                migration = """
+                ALTER TABLE runs ADD COLUMN reserved_usd REAL NOT NULL DEFAULT 0;
+                ALTER TABLE runs ADD COLUMN uncertain_cost INTEGER NOT NULL DEFAULT 0;
+                """
+            migration += """
+            ALTER TABLE runs ADD COLUMN repeats INTEGER NOT NULL DEFAULT 1;
+            ALTER TABLE results RENAME TO results_old;
             DROP INDEX IF EXISTS results_runner;
             """
-        restore = (
-            "INSERT INTO results SELECT * FROM results_v1; DROP TABLE results_v1;"
-            if version == 1
-            else ""
-        )
+            restore = (
+                f"INSERT INTO results ({RESULT_COLUMNS_V2}) SELECT {RESULT_COLUMNS_V2} "
+                "FROM results_old; DROP TABLE results_old;"
+            )
         try:
             self.conn.executescript(
                 f"BEGIN IMMEDIATE; {migration} {SCHEMA} {restore} "

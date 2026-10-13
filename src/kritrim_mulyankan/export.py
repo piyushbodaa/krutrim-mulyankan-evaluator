@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections import defaultdict
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -14,7 +14,8 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from kritrim_mulyankan.app_observations import AppContext
 from kritrim_mulyankan.metrics import wilson_interval
 from kritrim_mulyankan.provenance import redact, sha256_file
-from kritrim_mulyankan.store import Store
+from kritrim_mulyankan.store import ResultRecord, Store
+from kritrim_mulyankan.verdicts import Verdict, bootstrap_ci, paired_verdicts, task_tries
 
 
 class BenchmarkMetadata(BaseModel):
@@ -31,6 +32,7 @@ class RunMetadata(BaseModel):
     status: str
     evaluation_mode: Literal["mock", "live", "mixed", "unverified", "manual_app"]
     seed: int
+    repeats: int = 1
     software_version: str
     source: dict[str, Any] | None
     max_usd: float
@@ -94,6 +96,15 @@ class Aggregate(BaseModel):
     mean_latency_s: float | None
     cost_usd: float | None
     small_sample: bool
+    median_latency_s: float | None = None
+    task_count: int | None = None
+    tries_per_task: int | None = None
+    always_correct: int | None = None
+    sometimes_correct: int | None = None
+    never_correct: int | None = None
+    # Wilson for one try per task; with repeats, tries of a task are not independent, so the
+    # interval comes from resampling whole tasks instead.
+    success_ci_method: Literal["wilson", "task_bootstrap"] = "wilson"
 
 
 class ExportResult(BaseModel):
@@ -102,6 +113,7 @@ class ExportResult(BaseModel):
     task_version: int
     task_sha256: str
     runner_id: str
+    repeat_index: int = 0
     configuration_id: str
     capability_track: str
     capability_track_version: str = "1.0"
@@ -137,12 +149,13 @@ class ExportResult(BaseModel):
 
 class ResultExport(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
     benchmark: BenchmarkMetadata
     run: RunMetadata
     models: list[TestedConfiguration]
     results: list[ExportResult]
     aggregates: list[Aggregate]
+    verdicts: list[Verdict] = []
     supported_tracks: dict[str, str]
     limitations: list[str]
 
@@ -196,6 +209,7 @@ def result_export(store: Store, run_id: str, *, include_outputs: bool = False) -
                 task_version=record.task_version,
                 task_sha256=record.task_hash,
                 runner_id=record.runner,
+                repeat_index=record.repeat_index,
                 configuration_id=config["configuration_id"],
                 capability_track=metadata.get("capability_track", "text"),
                 capability_track_version=metadata.get("capability_track_version", "1.0"),
@@ -290,6 +304,10 @@ def result_export(store: Store, run_id: str, *, include_outputs: bool = False) -
         costs = [r.cost["usd"] for r in rows]
         latencies = [r.latency_s for r in rows if r.latency_s is not None]
         scores = [r.score for r in graded if r.score is not None]
+        tries = task_tries([r.model_dump() for r in rows])
+        rates = [right / count for right, count in tries.values()]
+        repeated = any(count > 1 for _, count in tries.values())
+        task_ci = bootstrap_ci(rates) if repeated else None
         mode = rows[0].evaluation_mode
         aggregates.append(
             {
@@ -311,11 +329,18 @@ def result_export(store: Store, run_id: str, *, include_outputs: bool = False) -
                 "pending_count": sum(r.grade_status == "pending" for r in rows),
                 "grader_error_count": sum(r.grade_status == "error" for r in rows),
                 "success_rate": passed / denominator if denominator else None,
-                "success_ci_95": wilson_interval(passed, denominator),
+                "success_ci_95": task_ci if repeated else wilson_interval(passed, denominator),
+                "success_ci_method": "task_bootstrap" if repeated else "wilson",
                 "mean_score": mean(scores) if scores else None,
                 "mean_latency_s": mean(latencies) if latencies else None,
                 "cost_usd": sum(costs) if all(c is not None for c in costs) else None,
-                "small_sample": len(graded) < 30,
+                "small_sample": len(tries) < 30,
+                "median_latency_s": median(latencies) if latencies else None,
+                "task_count": len(tries),
+                "tries_per_task": max((count for _, count in tries.values()), default=0),
+                "always_correct": sum(right == count for right, count in tries.values()),
+                "sometimes_correct": sum(0 < right < count for right, count in tries.values()),
+                "never_correct": sum(right == 0 for right, count in tries.values()),
             }
         )
     modes = {model["evaluation_mode"] for model in models}
@@ -335,6 +360,7 @@ def result_export(store: Store, run_id: str, *, include_outputs: bool = False) -
             "status": run.status,
             "evaluation_mode": next(iter(modes)) if len(modes) == 1 else "mixed",
             "seed": run.seed,
+            "repeats": run.repeats,
             "software_version": run.mj_version,
             "source": manifest.get("source"),
             "max_usd": run.max_usd,
@@ -345,6 +371,7 @@ def result_export(store: Store, run_id: str, *, include_outputs: bool = False) -
         models=models,
         results=results,
         aggregates=aggregates,
+        verdicts=paired_verdicts([result.model_dump() for result in results], models),
         supported_tracks={
             "consumer_app": "manual evidence imports; contributor-reported; review pending",
             "model_api": "direct API adapters; separate from app/subscription plans",
@@ -365,6 +392,8 @@ def result_export(store: Store, run_id: str, *, include_outputs: bool = False) -
             "not validation.",
             "Success denominator is graded attempts plus execution errors; "
             "pending/skipped excluded.",
+            "Verdicts compare systems on the same track and tasks; 'too close to call' means the "
+            "gap could be chance, not that the systems are equal.",
             "Browser workflow executes an offline state reducer, not a real browser agent.",
             "Costs cover API usage; subscriptions, hardware and electricity are excluded.",
             "Raw artifacts are private; default export omits prompts and output text.",
@@ -373,6 +402,12 @@ def result_export(store: Store, run_id: str, *, include_outputs: bool = False) -
             "An API model result never evaluates an app subscription tier.",
         ],
     )
+
+
+def explanation_key(record: ResultRecord) -> str:
+    """Key for a try's grader explanation; the first try keeps the original task:runner form."""
+    key = f"{record.task_id}:{record.runner}"
+    return f"{key}#{record.repeat_index}" if record.repeat_index else key
 
 
 def write_export(

@@ -13,11 +13,18 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from kritrim_mulyankan.engine import PreflightError, preflight, run_suite
+from kritrim_mulyankan.engine import MAX_REPEATS, PreflightError, preflight, run_suite
 from kritrim_mulyankan.export import write_export
 from kritrim_mulyankan.importer import import_suite
 from kritrim_mulyankan.pricing import load_prices
-from kritrim_mulyankan.report import LEADERBOARD_HEADERS, build_report, leaderboard_cells, to_html
+from kritrim_mulyankan.report import (
+    LEADERBOARD_HEADERS,
+    VERDICT_HEADERS,
+    build_report,
+    leaderboard_cells,
+    to_html,
+    verdict_cells,
+)
 from kritrim_mulyankan.report import to_markdown as report_markdown
 from kritrim_mulyankan.runners import RUNNER_CATALOG, Runner, make_runner
 from kritrim_mulyankan.settings import Settings
@@ -170,6 +177,14 @@ def run(
         list[str] | None, typer.Option("--task", "-t", help="Only these task ids, repeatable.")
     ] = None,
     seed: Annotated[int, typer.Option(help="Run seed; each task derives its own from it.")] = 0,
+    repeats: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            max=MAX_REPEATS,
+            help="Tries per task and runner, run as whole rounds; enables consistency stats.",
+        ),
+    ] = 1,
     max_usd: Annotated[
         float | None, typer.Option(help="Hard budget cap for this run (default MJ_MAX_USD).")
     ] = None,
@@ -194,19 +209,19 @@ def run(
     cap = settings.max_usd if max_usd is None else max_usd
 
     # Always check first: keys, prices and the worst case against the cap. Nothing is called.
-    check = preflight(tasks, runners, cap)
+    check = preflight(tasks, runners, cap, repeats=repeats)
     table = Table(
         "Runner", "Attempts", "Worst case USD", "Worst case INR", "Status", title="Cost estimate"
     )
     runner_problems = {r.name: r.problems() for r in runners}
     for r in runners:
         mine = [e for e in check.estimates if e.runner == r.name]
-        known = sum(e.cost_usd for e in mine if e.cost_usd is not None)
+        known = repeats * sum(e.cost_usd for e in mine if e.cost_usd is not None)
         unknown = any(e.cost_usd is None for e in mine)
         usd = "unknown" if unknown else f"${known:.4f}"
         inr = "unknown" if unknown else f"₹{known * settings.usd_to_inr:.2f}"
         status = "[red]not ready[/red]" if runner_problems[r.name] or unknown else "ready"
-        table.add_row(escape(r.name), str(len(mine)), usd, inr, status)
+        table.add_row(escape(r.name), str(len(mine) * repeats), usd, inr, status)
     console.print(table)
     worst_inr = check.worst_case_usd * settings.usd_to_inr
     console.print(
@@ -229,8 +244,9 @@ def run(
     def progress(r: ResultRecord) -> None:
         latency = "" if r.latency_s is None else f"{r.latency_s:.3f}s"
         detail = escape(r.error or r.grade_status or "")
+        task_label = r.task_id + (f" (try {r.repeat_index + 1}/{repeats})" if repeats > 1 else "")
         console.print(
-            f" {_mark(r)} {escape(r.task_id):<28} {escape(r.runner):<22} {latency:>8}  {detail}"
+            f" {_mark(r)} {escape(task_label):<28} {escape(r.runner):<22} {latency:>8}  {detail}"
         )
 
     with Store(settings.db_path) as store:
@@ -241,6 +257,7 @@ def run(
                 store=store,
                 settings=settings,
                 seed=seed,
+                repeats=repeats,
                 max_usd=cap,
                 task_ids=task,
                 on_result=progress,
@@ -361,3 +378,18 @@ def _print_leaderboard(store: Store, run_id: str) -> None:
     for row in rep.rows:
         table.add_row(*(escape(c) for c in leaderboard_cells(row)))
     console.print(table)
+    if rep.repeats > 1:
+        consistency = Table(
+            "Runner", "Right every time", "Sometimes right", "Never right",
+            title=f"Consistency over {rep.repeats} tries per task",
+        )  # fmt: skip
+        for row in rep.rows:
+            counts = (str(row.always), str(row.sometimes), str(row.never))
+            consistency.add_row(escape(row.runner), *counts)
+        console.print(consistency)
+    if rep.verdicts:
+        verdicts = Table(*VERDICT_HEADERS, title="Is the difference real?")
+        for verdict in rep.verdicts:
+            verdicts.add_row(*(escape(c) for c in verdict_cells(verdict)))
+        console.print(verdicts)
+        console.print("Too close to call means the gap could be chance, not that they are equal.")

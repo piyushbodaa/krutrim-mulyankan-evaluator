@@ -15,7 +15,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from kritrim_mulyankan.engine import preflight, run_suite
-from kritrim_mulyankan.export import result_export, write_export
+from kritrim_mulyankan.export import explanation_key, result_export, write_export
 from kritrim_mulyankan.provenance import redact
 from kritrim_mulyankan.runners.base import Runner
 from kritrim_mulyankan.runners.claude_draft import ClaudeDraftRunner
@@ -38,6 +38,7 @@ class JobRequest(BaseModel):
     task_ids: list[str] = Field(min_length=1, max_length=24)
     adapter_ids: list[str] = Field(min_length=1, max_length=4)
     seed: int = Field(12, ge=0, le=2**31 - 1)
+    repeats: int = Field(1, ge=1, le=5, description="Tries per task and adapter")
     idempotency_key: str = Field(pattern=r"^[A-Za-z0-9_-]{8,100}$")
 
     @model_validator(mode="after")
@@ -54,6 +55,7 @@ class JobEvent(BaseModel):
     stage: str
     task_id: str | None = None
     runner_id: str | None = None
+    repeat_index: int | None = None
     status: str | None = None
     grade_status: str | None = None
     passed: bool | None = None
@@ -222,21 +224,22 @@ class JobManager:
             if request.suite != "india-pilot" or len(tasks) > 3:
                 raise ValueError("Claude draft is limited to 1–3 frozen synthetic text tasks")
             submitted = sum(
-                len(s.request.task_ids)
+                len(s.request.task_ids) * s.request.repeats
                 for s in self.states.values()
                 if "harness:claude-draft" in s.request.adapter_ids
                 and (datetime.now(UTC) - datetime.fromisoformat(s.created_at)).total_seconds()
                 < 3600
             )
-            if submitted + len(tasks) > 8:
+            if submitted + len(tasks) * request.repeats > 8:
                 raise ValueError("Bounded CLI allowance reached: maximum 8 submitted attempts/hour")
         runners = [self.factories[identity]() for identity in request.adapter_ids]
-        check = preflight(tasks, runners, 0)
+        check = preflight(tasks, runners, 0, repeats=request.repeats)
         if not check.ok:
             raise ValueError("; ".join(check.problems))
         return {
             "api_version": "1.0",
-            "attempts": len(tasks) * len(runners),
+            "attempts": len(tasks) * len(runners) * request.repeats,
+            "repeats": request.repeats,
             "paid_api_budget_usd": 0,
             "actual_cost_known": all(r.kind == "fake" for r in runners),
             "modes": sorted({r.configuration()["evaluation_mode"] for r in runners}),
@@ -262,7 +265,7 @@ class JobManager:
                 status="queued",
                 created_at=now(),
                 updated_at=now(),
-                total=len(request.task_ids) * len(runners),
+                total=len(request.task_ids) * len(runners) * request.repeats,
                 parent_job_id=parent_job_id,
             )
             self.states[identity] = state
@@ -316,7 +319,7 @@ class JobManager:
             )
             if outputs:
                 payload["explanations"] = {
-                    r.task_id + ":" + r.runner: r.grade_details
+                    explanation_key(r): r.grade_details
                     for r in store.results_for_run(state["run_id"])
                 }
             return payload
@@ -361,6 +364,7 @@ class JobManager:
                         stage="persisted",
                         task_id=record.task_id,
                         runner_id=record.runner,
+                        repeat_index=record.repeat_index,
                         status=record.status,
                         grade_status=record.grade_status,
                         passed=record.passed,
@@ -376,6 +380,7 @@ class JobManager:
                     store=store,
                     settings=self.settings,
                     seed=state.request.seed,
+                    repeats=state.request.repeats,
                     max_usd=0,
                     task_ids=state.request.task_ids,
                     on_start=started,

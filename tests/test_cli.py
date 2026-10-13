@@ -1,34 +1,3 @@
-import pytest
-from typer.testing import CliRunner
-
-from kritrim_mulyankan.cli import app
-
-
-@pytest.fixture
-def km(tmp_path, suites_dir, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    base_env = {
-        "MJ_RUNS_DIR": str(tmp_path / "runs"),
-        "MJ_DB": str(tmp_path / "runs" / "results.db"),
-        "MJ_SUITES_DIR": str(suites_dir),
-        "MJ_PRICES": str(tmp_path / "prices.yaml"),
-        "COLUMNS": "250",
-        "TERM": "xterm-256color",  # Rich forces 80 columns when TERM=dumb.
-        # Hide any real credentials so results don't depend on the developer's machine.
-        "XDG_CONFIG_HOME": str(tmp_path / "config"),
-        **{k: None for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE",
-                             "OPENAI_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY",
-                             "OPENROUTER_API_KEY")},
-    }  # fmt: skip
-    runner = CliRunner()
-
-    def invoke(*args: str, env: dict | None = None):
-        return runner.invoke(app, list(args), env={**base_env, **(env or {})})
-
-    invoke.tmp_path = tmp_path
-    return invoke
-
-
 def test_list_suites_tasks_and_runners(km):
     result = km("list")
     assert result.exit_code == 0, result.output
@@ -162,7 +131,9 @@ def test_export_command_matches_versioned_contract(km):
     import json
 
     payload = json.loads(output.read_text())
-    assert payload["schema_version"] == "1.0"
-    assert payload["run"]["evaluation_mode"] == "mock"
+    assert payload["schema_version"] == "1.1"  # 1.1 adds repeat_index, repeats and verdicts.
+    assert payload["run"]["evaluation_mode"] == "mock" and payload["run"]["repeats"] == 1
+    assert {item["repeat_index"] for item in payload["results"]} == {0}
+    assert payload["verdicts"] == []  # One runner: nothing to compare.
     assert all(item["output"] is None for item in payload["results"])
     assert all(not item["eligible_for_model_ranking"] for item in payload["aggregates"])

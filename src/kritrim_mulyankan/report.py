@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import html
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from statistics import mean
 
+from kritrim_mulyankan.export import result_export
 from kritrim_mulyankan.metrics import mean_ci, wilson_interval
 from kritrim_mulyankan.store import ResultRecord, RunRecord, Store
+from kritrim_mulyankan.verdicts import Verdict, bootstrap_ci, task_tries
 
 DEFINITIONS = (
     "Success = passed / (graded + errored); pending (awaiting a judge) and skipped attempts are "
     "excluded. Score is normalised to 0-1, and a human score override wins when set. Intervals "
-    "are 95% (Wilson for success, normal approximation for score). Fake runners report "
-    "approximate tokens (characters / 4)."
+    "are 95% (Wilson for success with one try per task; resampled by task with repeats; normal "
+    "approximation for score). Fake runners report approximate tokens (characters / 4)."
 )
 
 
@@ -41,6 +44,10 @@ class RunnerRow:
     output_tokens: int | None
     cost_usd: float | None
     cost_inr: float | None
+    tries_per_task: int = 1
+    always: int = 0
+    sometimes: int = 0
+    never: int = 0
 
 
 @dataclass
@@ -51,6 +58,8 @@ class Report:
     categories: dict[str, str]
     runners: list[str]
     cells: dict[tuple[str, str], str]
+    verdicts: list[Verdict] = field(default_factory=list)
+    repeats: int = 1
 
 
 def effective_score(r: ResultRecord) -> float | None:
@@ -72,6 +81,8 @@ def build_report(store: Store, run_id: str) -> Report:
         judged = len(graded) + errors
         scores = [s for r in graded if (s := effective_score(r)) is not None]
         latencies = [r.latency_s for r in rs if r.status == "ok" and r.latency_s is not None]
+        tries = task_tries([r.model_dump() | {"runner_id": r.runner} for r in rs])
+        repeated = any(count > 1 for _, count in tries.values())
         rows.append(
             RunnerRow(
                 runner=runner,
@@ -79,7 +90,9 @@ def build_report(store: Store, run_id: str) -> Report:
                 passed=passed,
                 judged=judged,
                 success=passed / judged if judged else None,
-                success_ci=wilson_interval(passed, judged),
+                success_ci=bootstrap_ci([right / count for right, count in tries.values()])
+                if repeated
+                else wilson_interval(passed, judged),
                 score=mean_ci(scores),
                 pending=sum(r.status == "ok" and r.grade_status != "graded" for r in rs),
                 errors=errors,
@@ -97,6 +110,10 @@ def build_report(store: Store, run_id: str) -> Report:
                 cost_inr=sum(r.cost_inr for r in rs)
                 if all(r.cost_inr is not None for r in rs)
                 else None,
+                tries_per_task=max((count for _, count in tries.values()), default=1),
+                always=sum(right == count for right, count in tries.values()),
+                sometimes=sum(0 < right < count for right, count in tries.values()),
+                never=sum(right == 0 for right, _ in tries.values()),
             )
         )
     rows.sort(
@@ -105,13 +122,21 @@ def build_report(store: Store, run_id: str) -> Report:
     )
 
     task_ids = list(dict.fromkeys(r.task_id for r in results))
+    tries_by_cell: dict[tuple[str, str], list[ResultRecord]] = defaultdict(list)
+    for r in results:
+        tries_by_cell[(r.task_id, r.runner)].append(r)
     return Report(
         run=run,
         rows=rows,
         task_ids=task_ids,
         categories={r.task_id: r.category for r in results},
         runners=run.runners,
-        cells={(r.task_id, r.runner): cell(r) for r in results},
+        cells={
+            key: cell(tries[0]) if len(tries) == 1 else tries_cell(tries)
+            for key, tries in tries_by_cell.items()
+        },
+        verdicts=result_export(store, run_id).verdicts,
+        repeats=run.repeats,
     )
 
 
@@ -123,6 +148,39 @@ def cell(r: ResultRecord) -> str:
         score = effective_score(r)
         return f"{mark} {score:.2f}" if score is not None else mark
     return "judge error" if r.grade_status == "error" else "pending"
+
+
+def tries_cell(tries: list[ResultRecord]) -> str:
+    """One cell for every try of a task: ✓ right every time, ◐ sometimes, ✗ never."""
+    counted = [r for r in tries if r.status == "error" or r.grade_status == "graded"]
+    if not counted:
+        return "pending" if any(r.status == "ok" for r in tries) else tries[0].status
+    right = sum(r.status == "ok" and r.passed is True for r in counted)
+    mark = "✓" if right == len(counted) else "✗" if right == 0 else "◐"
+    return f"{mark} {right}/{len(counted)}"
+
+
+VERDICT_HEADERS = ["Pair", "Measure", "Verdict", "Gap", "95% range", "Split", "p (adjusted)"]
+
+
+def verdict_cells(v: Verdict) -> list[str]:
+    split = f"{v.a_better}–{v.b_better}" + (f", {v.tied} tied" if v.tied else "")
+    if v.metric == "accuracy":
+        gap = "none" if v.favours is None else f"{v.favours} +{abs(v.estimate):.1f} pts"
+        span = "–" if v.ci_95 is None else f"{v.ci_95[0]:+.1f} to {v.ci_95[1]:+.1f} pts"
+    else:
+        slower = v.runner_b if v.favours == v.runner_a else v.runner_a
+        gap = "none" if v.favours is None else f"{slower} takes {v.estimate:.1f}× as long"
+        span = "–" if v.ci_95 is None else f"{v.ci_95[0]:.1f}×–{v.ci_95[1]:.1f}×"
+    return [
+        f"{v.runner_a} vs {v.runner_b}",
+        "Accuracy" if v.metric == "accuracy" else "Speed",
+        "Clearly different" if v.verdict == "clearly_different" else "Too close to call",
+        gap,
+        span,
+        split,
+        f"{v.p_value_adjusted:.3g}",
+    ]
 
 
 def _pct(x: float | None) -> str:
@@ -196,6 +254,7 @@ def to_markdown(rep: Report) -> str:
         "",
         f"_{DEFINITIONS}_",
         "",
+        *_markdown_extras(rep, table),
         "## Per task",
         "",
         *table(
@@ -208,6 +267,32 @@ def to_markdown(rep: Report) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _markdown_extras(rep: Report, table) -> list[str]:
+    lines: list[str] = []
+    if rep.repeats > 1:
+        lines += [
+            f"## Consistency ({rep.repeats} tries per task)",
+            "",
+            *table(
+                ["Runner", "Right every time", "Sometimes right", "Never right"],
+                [[r.runner, str(r.always), str(r.sometimes), str(r.never)] for r in rep.rows],
+            ),
+            "",
+        ]
+    if rep.verdicts:
+        lines += [
+            "## Is the difference real?",
+            "",
+            *table(VERDICT_HEADERS, [verdict_cells(v) for v in rep.verdicts]),
+            "",
+            *(f"- {v.explanation}" for v in rep.verdicts),
+            "",
+            "_Too close to call means the gap could be chance, not that the systems are equal._",
+            "",
+        ]
+    return lines
 
 
 _CSS = """
@@ -229,6 +314,29 @@ th { background:var(--head); font-weight:600; }
 code { font:0.9em ui-monospace, monospace; }
 .pass { color:var(--pass); } .fail { color:var(--fail); } .other { color:var(--muted); }
 """
+
+
+def _html_extras(rep: Report, table) -> str:
+    e = html.escape
+    parts = []
+    if rep.repeats > 1:
+        parts.append(f"<h2>Consistency ({rep.repeats} tries per task)</h2>")
+        parts.append(
+            table(
+                ["Runner", "Right every time", "Sometimes right", "Never right"],
+                [[r.runner, str(r.always), str(r.sometimes), str(r.never)] for r in rep.rows],
+            )
+        )
+    if rep.verdicts:
+        parts.append("<h2>Is the difference real?</h2>")
+        parts.append(table(VERDICT_HEADERS, [verdict_cells(v) for v in rep.verdicts]))
+        notes = "".join(f"<li>{e(v.explanation)}</li>" for v in rep.verdicts)
+        parts.append(f'<ul class="note">{notes}</ul>')
+        parts.append(
+            '<p class="note">Too close to call means the gap could be chance, not that the '
+            "systems are equal.</p>"
+        )
+    return "\n".join(parts)
 
 
 def to_html(rep: Report) -> str:
@@ -279,6 +387,7 @@ def to_html(rep: Report) -> str:
 <h2>Leaderboard</h2>
 {table(LEADERBOARD_HEADERS, [leaderboard_cells(r) for r in rep.rows])}
 <p class="note">{e(DEFINITIONS)}</p>
+{_html_extras(rep, table)}
 <h2>Per task</h2>
 {table(["Task", "Category", *rep.runners], task_rows, task_classes)}
 <footer class="note">Related benchmarks: {related}</footer>
