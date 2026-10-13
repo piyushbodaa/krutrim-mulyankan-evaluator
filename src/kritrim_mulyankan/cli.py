@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, NoReturn
-import os
 
 import typer
 from dotenv import find_dotenv, load_dotenv
