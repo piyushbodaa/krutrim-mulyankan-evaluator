@@ -95,3 +95,16 @@ def test_resolve_suite_by_name_or_path(suites_dir, tmp_path):
     assert resolve_suite(str(path), suites_dir) == path
     with pytest.raises(FileNotFoundError):
         resolve_suite("missing", suites_dir)
+
+
+def test_resolve_suite_accepts_installed_file_spellings(suites_dir, tmp_path, monkeypatch):
+    # `km run suites/example.yaml` is the line install.sh shows. It must work
+    # from a folder that has no suites/ in it, via the installed suites_dir.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    expected = suites_dir / "example.yaml"
+    assert resolve_suite("suites/example.yaml", suites_dir) == expected
+    assert resolve_suite("example.yaml", suites_dir) == expected
+    with pytest.raises(FileNotFoundError):
+        resolve_suite("suites/missing.yaml", suites_dir)

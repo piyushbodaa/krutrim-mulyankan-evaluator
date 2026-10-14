@@ -68,10 +68,18 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
           python -m pip install .
-          python -m PyInstaller --noconfirm --clean --onefile --name km \
+          # --strip plus excluding unused stdlib/tooling modules keeps the
+          # single file smaller (locally 27.8 MB -> 23.5 MB). pygments stays:
+          # Typer's rich help imports it (verified by running the built file).
+          python -m PyInstaller --noconfirm --clean --onefile --strip --name km \
             --collect-all kritrim_mulyankan \
             --add-data "suites:suites" \
+            --exclude-module tkinter --exclude-module _tkinter \
+            --exclude-module test --exclude-module unittest \
+            --exclude-module pydoc --exclude-module pydoc_data \
+            --exclude-module lib2to3 --exclude-module setuptools \
             desktop/sidecar/km_entry.py
+          ./dist/km --help >/dev/null
           mkdir -p dist/km-linux/suites
           cp dist/km dist/km-linux/km
           chmod +x dist/km-linux/km
@@ -109,12 +117,22 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
           python -m pip install .
-          python -m PyInstaller --noconfirm --clean --onefile --name km-desktop \
+          # The engine is the largest thing we control inside the AppImage
+          # (the rest is WebKitGTK, which the .deb gets from the system).
+          # pygments is excluded here only: the desktop bridge never imports
+          # the Typer/rich CLI (verified with a ping/catalog/run check).
+          python -m PyInstaller --noconfirm --clean --onefile --strip --name km-desktop \
             --collect-all kritrim_mulyankan \
             --add-data "suites:suites" \
             --add-data "preview:preview" \
             --add-data "desktop/ui/dashboard-shim.js:desktop/ui" \
+            --exclude-module tkinter --exclude-module _tkinter \
+            --exclude-module test --exclude-module unittest \
+            --exclude-module pydoc --exclude-module pydoc_data \
+            --exclude-module lib2to3 --exclude-module setuptools \
+            --exclude-module pygments \
             desktop/sidecar/entry.py
+          printf '%s\n' '{"id":"ci","method":"ping","params":{}}' | ./dist/km-desktop | grep -q '"ok": true'
           mkdir -p desktop/src-tauri/resources/engine
           cp dist/km-desktop desktop/src-tauri/resources/engine/km-desktop
           chmod +x desktop/src-tauri/resources/engine/km-desktop
@@ -123,7 +141,7 @@ jobs:
         shell: bash
         run: |
           npm install
-          npm run build -- --bundles appimage
+          npm run build -- --bundles appimage,deb
       - name: Rename to the download filename
         shell: bash
         run: |
@@ -131,11 +149,20 @@ jobs:
           test -f "$built"
           cp "$built" Krutrim-Mulyankan-linux.AppImage
           chmod +x Krutrim-Mulyankan-linux.AppImage
+          built_deb=$(echo desktop/src-tauri/target/release/bundle/deb/*.deb)
+          test -f "$built_deb"
+          cp "$built_deb" Krutrim-Mulyankan-linux.deb
+          ls -lh Krutrim-Mulyankan-linux.AppImage Krutrim-Mulyankan-linux.deb
       - uses: actions/upload-artifact@v4
         with:
           name: Krutrim-Mulyankan-linux.AppImage
           if-no-files-found: error
           path: Krutrim-Mulyankan-linux.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Krutrim-Mulyankan-linux.deb
+          if-no-files-found: error
+          path: Krutrim-Mulyankan-linux.deb
 
   publish:
     name: GitHub Release
@@ -152,11 +179,12 @@ jobs:
         run: |
           ver="${GITHUB_REF_NAME#v}"
           test -f release/Krutrim-Mulyankan-linux.AppImage
+          test -f release/Krutrim-Mulyankan-linux.deb
           test -f "release/kritrim_mulyankan-${ver}-py3-none-any.whl"
           test -f release/km-linux-x86_64.tar.gz
           find release -type f -printf '%f\n' | sort > /tmp/release-names.txt
           cat /tmp/release-names.txt
-          test "$(wc -l < /tmp/release-names.txt)" -eq 3
+          test "$(wc -l < /tmp/release-names.txt)" -eq 4
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -166,12 +194,14 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             release/Krutrim-Mulyankan-linux.AppImage
+            release/Krutrim-Mulyankan-linux.deb
             release/kritrim_mulyankan-*.whl
             release/km-linux-x86_64.tar.gz
           body: |
             Linux only for now. Unsigned builds. Signing is a later step.
 
             - Krutrim-Mulyankan-linux.AppImage — desktop app, no terminal required
+            - Krutrim-Mulyankan-linux.deb — desktop app for Debian/Ubuntu (double-click to install; uses the system WebKitGTK, so it is much smaller)
             - kritrim_mulyankan-<version>-py3-none-any.whl
             - km-linux-x86_64.tar.gz — single-file `km`, with `suites/` beside it and packed inside
 
