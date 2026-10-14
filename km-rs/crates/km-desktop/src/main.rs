@@ -414,7 +414,7 @@ impl Session {
         if spec != "echo" && spec != "oracle" && !spec.starts_with("model:") {
             return Err("This app runs practice checks and model APIs. Other adapters stay on the command line.".into());
         }
-        make_runner(spec, prices)
+        make_runner(spec, prices, &self.env_snapshot())
     }
 
     fn clean_specs(&self, params: &Map<String, Value>) -> Result<Vec<String>, String> {

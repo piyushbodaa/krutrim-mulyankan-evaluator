@@ -4,7 +4,7 @@
 use crate::graders::{grade as run_grader, Grade};
 use crate::provenance::{redact, redact_str, source_metadata};
 use crate::pypy::sha256_hex;
-use crate::runners::{RunOutput, Runner, Usage, VERSION};
+use crate::runners::{RunContext, RunOutput, Runner, Usage, VERSION};
 use crate::settings::Settings;
 use crate::store::{ResultRecord, RunRecord, Store};
 use crate::suite::{Suite, Task};
@@ -380,9 +380,18 @@ pub fn run_suite(
                     if let Some(cb) = &callbacks.on_attempt {
                         cb(&task.id, &runner.name);
                     }
-                    let (o, lat) = attempt(runner, task, &prompt);
+                    let ctx = RunContext {
+                        workdir: make_workdir(&fixture_base, task),
+                        seed: task_seed,
+                        timeout_s: task.timeout_s,
+                        cancel: cancel.clone(),
+                    };
+                    let (o, lat) = attempt(runner, task, &prompt, &ctx);
+                    if ctx.workdir != fixture_base {
+                        let _ = std::fs::remove_dir_all(&ctx.workdir);
+                    }
                     out = o;
-                    latency = Some(lat);
+                    latency = lat;
                     if cancel
                         .as_ref()
                         .map(|c| c.load(Ordering::SeqCst))
@@ -526,14 +535,36 @@ fn build_manifest(
     })
 }
 
-fn attempt(runner: &Runner, task: &Task, prompt: &str) -> (RunOutput, f64) {
+fn make_workdir(base: &std::path::Path, task: &Task) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("km-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    for fixture in &task.fixtures {
+        let dest = dir.join(fixture);
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::copy(base.join(fixture), &dest);
+    }
+    dir
+}
+
+fn attempt(
+    runner: &Runner,
+    task: &Task,
+    prompt: &str,
+    ctx: &RunContext,
+) -> (RunOutput, Option<f64>) {
     let started_at = now_iso();
     let start = std::time::Instant::now();
-    let mut out =
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.run(task, prompt))) {
-            Ok(o) => o,
-            Err(_) => RunOutput::error(redact_str("Panic: runner panicked", &[])),
-        };
+    let mut out = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runner.run(task, prompt, ctx)
+    })) {
+        Ok(o) => o,
+        Err(_) => RunOutput::error(redact_str("Panic: runner panicked", &[])),
+    };
     if let Some(err) = &out.error {
         out.error = Some(redact_str(err, &[]));
     }
@@ -547,6 +578,16 @@ fn attempt(runner: &Runner, task: &Task, prompt: &str) -> (RunOutput, f64) {
             "scope": "adapter invocation including local overhead",
         }),
     );
+    // Import latency is not app response time for manual observations.
+    let config = runner.configuration();
+    let latency = if config.get("evaluation_mode").and_then(|v| v.as_str()) == Some("manual_app") {
+        config
+            .get("app_context")
+            .and_then(|c| c.get("observed_latency_s"))
+            .and_then(|v| v.as_f64())
+    } else {
+        Some(latency)
+    };
     (out, latency)
 }
 

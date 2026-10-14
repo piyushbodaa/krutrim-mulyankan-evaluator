@@ -16,5 +16,9 @@ regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 unicode-normalization = "0.1"
 rust_decimal = "1"
+ureq = { version = "2", features = ["json"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]

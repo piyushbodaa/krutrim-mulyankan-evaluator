@@ -25,32 +25,45 @@ fn main() -> ExitCode {
 
 fn dispatch(args: &[String]) -> Result<u8, String> {
     let Some(cmd) = args.first() else {
-        println!("{}", main_help());
+        println!("{}", boxed(&main_help()));
         return Ok(0);
     };
     match cmd.as_str() {
         "--help" | "-h" | "help" => {
-            println!("{}", main_help());
+            println!("{}", boxed(&main_help()));
             Ok(0)
         }
         "list" => cmd_list(&args[1..]),
         "run" => cmd_run(&args[1..]),
         "import-suite" => cmd_import(&args[1..]),
-        "ui" => {
-            eprintln!(
-                "error: the local workbench (km ui) is not yet ported to the Rust km; \
-                 use the Python km ui or the desktop app"
-            );
-            Ok(1)
-        }
+        "ui" => cmd_ui(&args[1..]),
         "export" => cmd_export(&args[1..]),
         "report" => cmd_report(&args[1..]),
         other => Err(format!("No such command '{other}'.\n\n{}", main_help())),
     }
 }
 
+fn boxed(text: &str) -> String {
+    // Cheap echo of Rich's rounded panels: one border around the help body.
+    let lines: Vec<&str> = text.trim_end().lines().collect();
+    let width = lines.iter().map(|l| display_width(l)).max().unwrap_or(0);
+    let inner = width;
+    let mut out = vec![format!("╭{}╮", "─".repeat(inner + 2))];
+    for line in &lines {
+        if display_width(line) <= inner {
+            out.push(format!("│ {} │", pad(line, inner)));
+        } else {
+            for chunk in wrap_cell(line, inner) {
+                out.push(format!("│ {} │", pad(&chunk, inner)));
+            }
+        }
+    }
+    out.push(format!("╰{}╯", "─".repeat(inner + 2)));
+    out.join("\n")
+}
+
 fn main_help() -> String {
-    "Usage: km [OPTIONS] COMMAND [ARGS]...\n\nLocal tests for AI models, harnesses and agents.\n\nOptions:\n  --install-completion  Install completion for the current shell.\n  --show-completion     Show completion for the current shell, to copy or customize the installation.\n  --help                Show this message and exit.\n\nCommands:\n  list          List suites, runners, or past runs: km list suites|runners|runs\n  run           Run SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n  import-suite  Import a foreign suite directory into Mulyankan YAML.\n  ui            Open the local test workbench (Python km only for now).\n  export        Write the schema-1.1 JSON export (default: latest run). Outputs are omitted unless --include-outputs is explicit.\n  report        Print the leaderboard for RUN_ID (default: latest run).\n".into()
+    "Usage: km [OPTIONS] COMMAND [ARGS]...\n\nLocal tests for AI models, harnesses and agents.\n\nOptions:\n  --install-completion  Install completion for the current shell.\n  --show-completion     Show completion for the current shell, to copy or customize the installation.\n  --help                Show this message and exit.\n\nCommands:\n  list          List suites, runners, or past runs: km list suites|runners|runs\n  run           Run SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n  import-suite  Import a foreign suite directory into Mulyankan YAML.\n  ui            Open a local pilot workbench with task selection and free mock checks.\n  export        Write the schema-1.1 JSON export (default: latest run). Outputs are omitted unless --include-outputs is explicit.\n  report        Print the leaderboard for RUN_ID (default: latest run).\n".into()
 }
 
 fn load_dotenv() {
@@ -227,6 +240,8 @@ struct RunArgs {
     max_usd: Option<f64>,
     seed: i64,
     tasks: Vec<String>,
+    dry_run: bool,
+    allow_paid: bool,
 }
 
 fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
@@ -234,6 +249,7 @@ fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
     let mut runners = Vec::new();
     let mut tasks = Vec::new();
     let (mut reps, mut seed, mut max_usd) = (1i64, 7i64, None);
+    let (mut dry_run, mut allow_paid) = (false, false);
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -245,9 +261,11 @@ fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
         };
         match a.as_str() {
             "--help" => {
-                println!("Usage: km run [OPTIONS] SUITE\n\nRun SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n\nArguments:\n  SUITE  Suite name or path  [required]\n\nOptions:\n  -r, --runner TEXT       Runner spec (repeatable)  [default: echo, oracle]\n  --repeats INT   Tries per task, 1-10  [default: 1]\n  --max-usd FLOAT         Spend cap in USD (default MJ_MAX_USD or 1.0)\n  --seed INT              Run seed  [default: 7]\n  --task TEXT             Only these task ids (repeatable)\n  --help                  Show this message and exit.\n");
+                println!("Usage: km run [OPTIONS] SUITE\n\nRun SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n\nArguments:\n  SUITE  Suite name or path  [required]\n\nOptions:\n  -r, --runner TEXT       Runner spec (repeatable)  [default: echo, oracle]\n  --repeats INT   Tries per task, 1-10  [default: 1]\n  --max-usd FLOAT         Spend cap in USD (default MJ_MAX_USD or 1.0)\n  --seed INT              Run seed  [default: 7]\n  --task TEXT             Only these task ids (repeatable)\n  --dry-run               Estimate cost and stop; runs nothing.\n  --allow-paid            Explicitly permit paid API calls after preflight.\n  --help                  Show this message and exit.\n");
                 return Ok(None);
             }
+            "--dry-run" => dry_run = true,
+            "--allow-paid" => allow_paid = true,
             "-r" | "--runner" => runners.push(take(&mut i)?),
             "--repeats" => {
                 reps = take(&mut i)?
@@ -312,6 +330,8 @@ fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
         max_usd,
         seed,
         tasks,
+        dry_run,
+        allow_paid,
     }))
 }
 
@@ -337,10 +357,97 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
     };
     let mut runners = Vec::new();
     for spec in &parsed.runners {
-        match make_runner(spec, &prices) {
+        match make_runner(spec, &prices, &std::env::vars().collect()) {
             Ok(r) => runners.push(r),
             Err(e) => return Ok(err1(e)),
         }
+    }
+    // Always check first: keys, prices and the worst case against the cap.
+    let selected = match suite.select(if parsed.tasks.is_empty() {
+        None
+    } else {
+        Some(&parsed.tasks)
+    }) {
+        Ok(t) => t,
+        Err(e) => return Ok(err1(e)),
+    };
+    let cap = parsed.max_usd.unwrap_or(s.max_usd);
+    let check = krutrim_evaluator::preflight(&selected, &runners, cap, parsed.reps);
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for runner in &runners {
+        let mine: Vec<_> = check
+            .estimates
+            .iter()
+            .filter(|e| e.runner == runner.name)
+            .collect();
+        let unknown = mine.iter().any(|e| e.cost_usd.is_none());
+        let known: f64 = parsed.reps as f64 * mine.iter().filter_map(|e| e.cost_usd).sum::<f64>();
+        let usd = if unknown {
+            "unknown".into()
+        } else {
+            format!("${known:.4}")
+        };
+        let inr = if unknown {
+            "unknown".into()
+        } else {
+            format!("₹{:.2}", known * s.usd_to_inr)
+        };
+        let status = if !runner.problems().is_empty() || unknown {
+            "not ready"
+        } else {
+            "ready"
+        };
+        rows.push(vec![
+            runner.name.clone(),
+            (mine.len() as i64 * parsed.reps).to_string(),
+            usd,
+            inr,
+            status.into(),
+        ]);
+    }
+    println!(
+        "{}",
+        render_table(
+            Some("Cost estimate"),
+            &[
+                "Runner",
+                "Attempts",
+                "Worst case USD",
+                "Worst case INR",
+                "Status"
+            ],
+            &rows
+        )
+    );
+    println!(
+        "Worst case ${:.4} (₹{:.2}) against a cap of ${cap:.2}. Worst case = prompt bytes in, max_output_tokens out.",
+        check.worst_case_usd,
+        check.worst_case_usd * s.usd_to_inr
+    );
+    for warning in &check.warnings {
+        eprintln!("warning: {warning}");
+    }
+    for problem in &check.problems {
+        eprintln!("problem: {problem}");
+    }
+    if parsed.dry_run {
+        let verdict = if check.ok() {
+            "a real run would start"
+        } else {
+            "a real run would be refused"
+        };
+        println!("Dry run: nothing was called or spent; {verdict}.");
+        return Ok(if check.ok() { 0 } else { 1 });
+    }
+    if !check.ok() {
+        return Ok(err1(
+            "refusing to run; fix the problems above (nothing was called or spent)",
+        ));
+    }
+    if !parsed.allow_paid && check.worst_case_usd > 0.0 {
+        return Ok(err1(
+            "paid execution requires --allow-paid and an approved --max-usd budget",
+        ));
     }
     let store = match Store::open(&s.db_path) {
         Ok(st) => st,
@@ -489,7 +596,7 @@ fn positional(args: &[String]) -> (Vec<String>, BTreeMap<String, Option<String>>
         }
         if a.starts_with("--") {
             let next = args.get(i + 1);
-            if matches!(a.as_str(), "--output" | "-o" | "--name") {
+            if matches!(a.as_str(), "--output" | "-o" | "--name" | "--port") {
                 opts.insert(a.clone(), next.cloned());
                 i += 2;
             } else {
@@ -787,4 +894,33 @@ fn render_table_owned(title: Option<&str>, headers: &[String], rows: &[Vec<Strin
     }
     out.push(line("└", "┴", "┘", "─"));
     out.join("\n")
+}
+
+// ---------------- ui ----------------
+
+fn cmd_ui(args: &[String]) -> Result<u8, String> {
+    let (pos, opts) = positional(args);
+    if opts.contains_key("--help") {
+        println!("Usage: km ui [OPTIONS] [PROJECT_DIR]\n\nOpen a local pilot workbench with task selection and free mock checks.\n\nArguments:\n  PROJECT_DIR  [default: .]\n\nOptions:\n  --port INT  [default: 8765]\n  --help      Show this message and exit.\n");
+        return Ok(0);
+    }
+    let project = pos.first().cloned().unwrap_or_else(|| ".".to_string());
+    let port: u16 = match opts
+        .get("--port")
+        .cloned()
+        .flatten()
+        .map(|v| v.parse())
+        .transpose()
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => 8765,
+        Err(_) => return Ok(err1("--port needs an integer")),
+    };
+    if !(1024..=65535).contains(&port) {
+        return Ok(err1("choose a port between 1024 and 65535"));
+    }
+    match krutrim_evaluator::workbench::serve_workbench(Path::new(&project), port) {
+        Ok(()) => Ok(0),
+        Err(e) => Ok(err1(e)),
+    }
 }
