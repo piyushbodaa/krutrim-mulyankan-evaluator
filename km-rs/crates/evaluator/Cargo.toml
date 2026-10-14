@@ -1,0 +1,20 @@
+[package]
+name = "krutrim-evaluator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared Rust evaluator for the km CLI and the Krutrim Mulyankan desktop app"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+unicode-normalization = "0.1"
+rust_decimal = "1"
+
+[dev-dependencies]

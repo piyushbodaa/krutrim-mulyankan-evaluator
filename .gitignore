@@ -24,3 +24,6 @@ desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/src-tauri/resources/engine/*
 !desktop/src-tauri/resources/engine/.gitkeep
+
+# Rust workspace
+km-rs/target/

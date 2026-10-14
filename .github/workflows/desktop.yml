@@ -45,9 +45,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -59,33 +56,22 @@ jobs:
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libssl-dev libdbus-1-dev pkg-config
-      - name: Bundle the Python engine
+      - name: Build the Rust engine
         shell: bash
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyinstaller
-          python -m pip install .
-          if [ "$RUNNER_OS" = "Windows" ]; then SEP=";"; STRIP=""; else SEP=":"; STRIP="--strip"; fi
-          # Same slimming as release.yml; pygments is desktop-only safe to
-          # drop because the bridge never imports the Typer/rich CLI.
-          python -m PyInstaller --noconfirm --clean --onefile $STRIP --name km-desktop \
-            --collect-all kritrim_mulyankan \
-            --add-data "suites${SEP}suites" \
-            --add-data "preview${SEP}preview" \
-            --add-data "desktop/ui/dashboard-shim.js${SEP}desktop/ui" \
-            --exclude-module tkinter --exclude-module _tkinter \
-            --exclude-module test --exclude-module unittest \
-            --exclude-module pydoc --exclude-module pydoc_data \
-            --exclude-module lib2to3 --exclude-module setuptools \
-            --exclude-module pygments \
-            desktop/sidecar/entry.py
-          mkdir -p desktop/src-tauri/resources/engine
+          # The desktop engine is the Rust km-desktop binary, built from the
+          # same evaluator crate as the km CLI (km-rs/). No Python is bundled.
+          cargo build --release --manifest-path km-rs/Cargo.toml -p km-desktop-engine
+          mkdir -p desktop/src-tauri/resources/engine/desktop/ui
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cp dist/km-desktop.exe desktop/src-tauri/resources/engine/km-desktop.exe
+            cp km-rs/target/release/km-desktop.exe desktop/src-tauri/resources/engine/km-desktop.exe
           else
-            cp dist/km-desktop desktop/src-tauri/resources/engine/km-desktop
+            cp km-rs/target/release/km-desktop desktop/src-tauri/resources/engine/km-desktop
             chmod +x desktop/src-tauri/resources/engine/km-desktop
           fi
+          cp -a preview desktop/src-tauri/resources/engine/preview
+          cp -a suites desktop/src-tauri/resources/engine/suites
+          cp desktop/ui/dashboard-shim.js desktop/src-tauri/resources/engine/desktop/ui/dashboard-shim.js
       - name: Build the unsigned installer
         working-directory: desktop
         shell: bash
