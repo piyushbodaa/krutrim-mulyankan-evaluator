@@ -1,5 +1,5 @@
 # Pushing a tag v<version> publishes download assets. The tag version must match
-# pyproject.toml (v0.1.0 -> kritrim_mulyankan-0.1.0-py3-none-any.whl).
+# pyproject.toml (v0.1.1 -> kritrim_mulyankan-0.1.1-py3-none-any.whl).
 # This file does not create tags. Assets are unsigned; see desktop/SIGNING.md.
 name: Release
 
