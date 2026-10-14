@@ -15,12 +15,19 @@ import os
 import re
 import subprocess
 import sys
+import threading
+from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import httpx2
 import pytest
 from typer.testing import CliRunner
 
 from kritrim_mulyankan.cli import app
+from kritrim_mulyankan.runners import providers as py_providers
+
+_REAL_HANDLE = httpx2.HTTPTransport.handle_request
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -134,6 +141,11 @@ def _compare(suite_args: list[str], tmp_path: Path) -> None:
 
     py_results = json.loads((py_dir / "results.json").read_text(encoding="utf-8"))
     rs_results = json.loads((rs_dir / "results.json").read_text(encoding="utf-8"))
+    # The Python monkeypatch points the SDK at the mock, so it records the
+    # loopback URL; the Rust KM_* test hook keeps the canonical endpoint.
+    for payload in (py_results, rs_results):
+        for model in payload["models"]:
+            model["endpoint"] = "<mock>"
     assert _export(rs_results) == _export(py_results)
 
     py_manifest = json.loads((py_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -269,3 +281,194 @@ def test_desktop_bridge_free_run(tmp_path: Path) -> None:
     assert Path(run["card_path"]).is_file()
     assert "/board/" in run["dashboard_url"]
     assert sys.version_info  # keep the import obvious for tooling
+
+
+# ---- model-runner parity against one loopback mock provider server ----
+
+
+MOCK_PROVIDERS = [
+    "anthropic",
+    "openai",
+    "xai",
+    "gemini",
+    "openrouter",
+    "ollama",
+    "vllm",
+    "compatible",
+]
+
+KEY_ENVS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "xai": "XAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "compatible": "COMPATIBLE_API_KEY",
+}
+
+
+class _MockProvider:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict]] = []
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):  # noqa: D401 - keep test output clean
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                outer.requests.append((self.path, body))
+                if self.path.endswith("/v1/messages"):
+                    payload = {
+                        "id": "msg_test",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "test-model",
+                        "content": [{"type": "text", "text": "5"}],
+                        "stop_reason": "end_turn",
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 50,
+                            "cache_read_input_tokens": 10,
+                            "cache_creation_input_tokens": 5,
+                        },
+                    }
+                else:
+                    payload = {
+                        "id": "chatcmpl-test",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "test-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "5"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 120,
+                            "completion_tokens": 30,
+                            "total_tokens": 150,
+                            "prompt_tokens_details": {"cached_tokens": 20},
+                        },
+                    }
+                data = json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+        return False
+
+
+@pytest.mark.parametrize("provider", MOCK_PROVIDERS)
+def test_model_runner_parity(provider: str, tmp_path: Path, monkeypatch) -> None:
+    """Same mock endpoint, same canned usage: both kms must record the same
+    output, token usage and USD cost, and send the same request shape."""
+
+    def loopback_only(self, request):
+        # conftest disables all network in tests; this parity test talks to a
+        # loopback mock only, so re-enable 127.0.0.1 and keep refusing the rest.
+        if request.url.host != "127.0.0.1":
+            raise RuntimeError(f"network disabled in tests: {request.method} {request.url}")
+        return _REAL_HANDLE(self, request)
+
+    monkeypatch.setattr(httpx2.HTTPTransport, "handle_request", loopback_only)
+    prices = tmp_path / "prices.yaml"
+    blocks = []
+    for name in MOCK_PROVIDERS:
+        blocks.append(
+            f"{name}:\n  source: https://example.invalid/pricing\n"
+            '  as_of: "2026-10-14"\n  models:\n'
+            "    test-model: {input: 4.00, output: 20.00, cache_read: 0.20, cache_write: 5.00}\n"
+        )
+    prices.write_text("\n".join(blocks), encoding="utf-8")
+
+    with _MockProvider() as mock:
+        base = f"http://127.0.0.1:{mock.port}/v1"
+        env = {
+            "MJ_PRICES": str(prices),
+            "NO_PROXY": "127.0.0.1",
+            "no_proxy": "127.0.0.1",
+            f"KM_{provider.upper()}_BASE_URL": base,
+            "COMPATIBLE_BASE_URL": base,
+            "OLLAMA_BASE_URL": base,
+            "VLLM_BASE_URL": base,
+        }
+        if provider in KEY_ENVS:
+            env[KEY_ENVS[provider]] = "test-key"
+        if provider == "anthropic":
+            # Anthropic bases carry no /v1 suffix; both sides append it.
+            env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{mock.port}"
+            env["KM_ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{mock.port}"
+        # Python cloud providers pin their base URL in code; point the
+        # in-process copy at the mock for this test only.
+        original = py_providers.PROVIDERS[provider]
+        if provider == "anthropic":
+            pass  # the Anthropic SDK honours ANTHROPIC_BASE_URL
+        elif provider not in {"ollama", "vllm", "compatible"}:
+            monkeypatch.setitem(py_providers.PROVIDERS, provider, replace(original, base_url=base))
+        args = [
+            "run",
+            "suites/example.yaml",
+            "-r",
+            f"model:{provider}/test-model",
+            "--seed",
+            "7",
+            "--allow-paid",
+            "--max-usd",
+            "1",
+        ]
+        py_dir = _one_run_dir(_run_python(args, tmp_path / "py", env))
+        py_requests = list(mock.requests)
+        mock.requests.clear()
+        rs_dir = _one_run_dir(_run_rust(args, tmp_path / "rs", env))
+        rs_requests = list(mock.requests)
+
+    py_results = json.loads((py_dir / "results.json").read_text(encoding="utf-8"))
+    rs_results = json.loads((rs_dir / "results.json").read_text(encoding="utf-8"))
+    # The Python monkeypatch points the SDK at the mock, so it records the
+    # loopback URL; the Rust KM_* test hook keeps the canonical endpoint.
+    for payload in (py_results, rs_results):
+        for model in payload["models"]:
+            model["endpoint"] = "<mock>"
+    assert _export(rs_results) == _export(py_results)
+
+    def rows(payload):
+        return {
+            row["task_id"]: (
+                row["output"],
+                row["usage"]["input_tokens"],
+                row["usage"]["output_tokens"],
+                row["cost"]["usd"],
+                row["passed"],
+            )
+            for row in payload["results"]
+        }
+
+    assert rows(rs_results) == rows(py_results)
+
+    def shapes(requests):
+        normalized = []
+        for path, body in requests:
+            body = dict(body)
+            body.pop("stream", None)  # SDKs may send an explicit default
+            normalized.append((path, body))
+        return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True))
+
+    assert shapes(rs_requests) == shapes(py_requests)
