@@ -3,7 +3,7 @@
 //! results table. Non-TTY behaviour never reaches this module.
 
 use crate::keys;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -424,6 +424,14 @@ impl App {
 
 impl App {
     fn on_key(&mut self, key: KeyEvent) {
+        self.on_key_with_start(key, Self::start_run);
+    }
+
+    // Keep the launch boundary injectable so confirmation tests cannot call a provider.
+    fn on_key_with_start(&mut self, key: KeyEvent, start_run: impl FnOnce(&mut Self)) {
+        if key.kind != KeyEventKind::Press {
+            return;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.outcome = Some(Outcome::Quit);
             return;
@@ -496,9 +504,9 @@ impl App {
                 _ => {}
             },
             Screen::Confirm => match key.code {
-                KeyCode::Enter | KeyCode::Char('y') => {
+                KeyCode::Char('y') if key.modifiers.is_empty() => {
                     if self.confirm_ok {
-                        self.start_run();
+                        start_run(self);
                     }
                 }
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('n') => {
@@ -623,7 +631,7 @@ impl App {
                 } else if self.confirm_worst_usd > 0.0 {
                     "y = allow paid calls up to the cap and run · n/Esc back"
                 } else {
-                    "Enter = run (free) · Esc back"
+                    "y = run (free) · n/Esc back"
                 },
             ),
             Screen::Running => self.render_running(frame, area),
@@ -1010,8 +1018,123 @@ mod tests {
                 color: false,
                 help_text: "Usage: km".into(),
             },
-            Settings::from_env(),
+            Settings::from_map(&BTreeMap::new()),
         )
+    }
+
+    fn confirmation_app(paid: bool, preflight_ok: bool) -> App {
+        let mut app = test_app();
+        app.screen = Screen::Confirm;
+        app.confirm_ok = preflight_ok;
+        app.confirm_worst_usd = if paid { 0.5 } else { 0.0 };
+        app
+    }
+
+    #[test]
+    fn confirmation_requires_explicit_y_for_paid_and_free_runs() {
+        for paid in [true, false] {
+            for code in [
+                KeyCode::Enter,
+                KeyCode::Char(' '),
+                KeyCode::Char('Y'),
+                KeyCode::Tab,
+                KeyCode::Backspace,
+            ] {
+                let mut app = confirmation_app(paid, true);
+                for _ in 0..3 {
+                    app.on_key_with_start(KeyEvent::from(code), |_| panic!("unexpected launch"));
+                }
+                assert_eq!(app.screen, Screen::Confirm);
+                assert!(app.channel.is_none());
+            }
+            let mut app = confirmation_app(paid, true);
+            let mut launches = 0;
+            app.on_key_with_start(KeyEvent::from(KeyCode::Char('y')), |app| {
+                launches += 1;
+                app.screen = Screen::Running;
+            });
+            assert_eq!(launches, 1);
+            assert_eq!(app.screen, Screen::Running);
+            app.on_key_with_start(KeyEvent::from(KeyCode::Char('y')), |_| {
+                panic!("duplicate launch")
+            });
+        }
+    }
+
+    #[test]
+    fn confirmation_cancel_and_failed_preflight_never_launch() {
+        for paid in [true, false] {
+            for code in [KeyCode::Esc, KeyCode::Char('n'), KeyCode::Char('q')] {
+                let mut app = confirmation_app(paid, true);
+                app.on_key_with_start(KeyEvent::from(code), |_| panic!("cancel launched"));
+                assert_eq!(app.screen, Screen::Runners);
+                app.on_key_with_start(KeyEvent::from(KeyCode::Char('y')), |_| {
+                    panic!("cancel retained approval")
+                });
+            }
+            let mut app = confirmation_app(paid, false);
+            app.on_key_with_start(KeyEvent::from(KeyCode::Char('y')), |_| {
+                panic!("failed preflight launched")
+            });
+            assert_eq!(app.screen, Screen::Confirm);
+            let mut app = confirmation_app(paid, true);
+            app.on_key_with_start(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                |_| panic!("quit launched"),
+            );
+            assert!(matches!(app.outcome, Some(Outcome::Quit)));
+        }
+    }
+
+    #[test]
+    fn reprepare_clears_previous_approval_when_suite_is_unavailable() {
+        let mut app = confirmation_app(true, true);
+        app.suite = None;
+        app.prepare_confirm();
+        assert!(!app.confirm_ok);
+        app.on_key_with_start(KeyEvent::from(KeyCode::Char('y')), |_| {
+            panic!("stale preflight launched")
+        });
+        assert_eq!(app.screen, Screen::Confirm);
+    }
+
+    #[test]
+    fn confirmation_ignores_repeat_release_and_modified_y() {
+        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+            let mut app = confirmation_app(true, true);
+            let key = KeyEvent::new_with_kind(KeyCode::Char('y'), KeyModifiers::NONE, kind);
+            app.on_key_with_start(key, |_| panic!("non-press launched"));
+            assert_eq!(app.screen, Screen::Confirm);
+        }
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SHIFT,
+        ] {
+            let mut app = confirmation_app(true, true);
+            app.on_key_with_start(KeyEvent::new(KeyCode::Char('y'), modifiers), |_| {
+                panic!("modified key launched")
+            });
+            assert_eq!(app.screen, Screen::Confirm);
+        }
+    }
+
+    #[test]
+    fn confirmation_footer_matches_explicit_opt_in() {
+        for paid in [true, false] {
+            let app = confirmation_app(paid, true);
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("y ="));
+            assert!(!text.contains("Enter = run"));
+        }
     }
 
     #[test]
