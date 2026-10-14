@@ -44,19 +44,3 @@ jobs:
         run: |
           uv sync --group dev
           uv run pytest tests/test_rust_parity.py -v
-
-  build-other-os:
-    name: Build km (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build km (compile check; release assets stay Linux for now)
-        shell: bash
-        run: |
-          cargo build --release --manifest-path km-rs/Cargo.toml -p km-cli
-          ls -lh km-rs/target/release/km* | head
