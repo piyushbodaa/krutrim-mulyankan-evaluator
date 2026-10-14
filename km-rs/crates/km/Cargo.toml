@@ -1,0 +1,16 @@
+[package]
+name = "km-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "km: Krutrim Mulyankan command line (Rust)"
+
+[[bin]]
+name = "km"
+path = "src/main.rs"
+
+[dependencies]
+krutrim-evaluator = { path = "../evaluator" }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

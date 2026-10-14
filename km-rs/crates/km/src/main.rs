@@ -1,0 +1,790 @@
+//! km — Krutrim Mulyankan command line (Rust port of the Python Typer CLI).
+//! Same commands, flags, suite YAML and artifacts; see RUNNER notes in the
+//! evaluator crate for the parts that are not ported yet.
+
+use krutrim_evaluator::outputs::write_outputs;
+use krutrim_evaluator::report::{
+    leaderboard_cells, verdict_cells, DEFINITIONS, LEADERBOARD_HEADERS, VERDICT_HEADERS,
+};
+use krutrim_evaluator::*;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    load_dotenv();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match dispatch(&args) {
+        Ok(code) => ExitCode::from(code),
+        Err(msg) => {
+            eprintln!("{msg}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn dispatch(args: &[String]) -> Result<u8, String> {
+    let Some(cmd) = args.first() else {
+        println!("{}", main_help());
+        return Ok(0);
+    };
+    match cmd.as_str() {
+        "--help" | "-h" | "help" => {
+            println!("{}", main_help());
+            Ok(0)
+        }
+        "list" => cmd_list(&args[1..]),
+        "run" => cmd_run(&args[1..]),
+        "import-suite" => cmd_import(&args[1..]),
+        "ui" => {
+            eprintln!(
+                "error: the local workbench (km ui) is not yet ported to the Rust km; \
+                 use the Python km ui or the desktop app"
+            );
+            Ok(1)
+        }
+        "export" => cmd_export(&args[1..]),
+        "report" => cmd_report(&args[1..]),
+        other => Err(format!("No such command '{other}'.\n\n{}", main_help())),
+    }
+}
+
+fn main_help() -> String {
+    "Usage: km [OPTIONS] COMMAND [ARGS]...\n\nLocal tests for AI models, harnesses and agents.\n\nOptions:\n  --install-completion  Install completion for the current shell.\n  --show-completion     Show completion for the current shell, to copy or customize the installation.\n  --help                Show this message and exit.\n\nCommands:\n  list          List suites, runners, or past runs: km list suites|runners|runs\n  run           Run SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n  import-suite  Import a foreign suite directory into Mulyankan YAML.\n  ui            Open the local test workbench (Python km only for now).\n  export        Write the schema-1.1 JSON export (default: latest run). Outputs are omitted unless --include-outputs is explicit.\n  report        Print the leaderboard for RUN_ID (default: latest run).\n".into()
+}
+
+fn load_dotenv() {
+    let Ok(text) = std::fs::read_to_string(".env") else {
+        return;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let (k, v) = (k.trim(), v.trim().trim_matches(['"', '\'']));
+            if std::env::var_os(k).is_none() {
+                std::env::set_var(k, v);
+            }
+        }
+    }
+}
+
+fn settings() -> Settings {
+    Settings::from_env()
+}
+
+fn suites_dir(s: &Settings) -> PathBuf {
+    effective_suites_dir(s)
+}
+
+fn err1(msg: impl std::fmt::Display) -> u8 {
+    eprintln!("error: {msg}");
+    1
+}
+
+// ---------------- list ----------------
+
+fn cmd_list(args: &[String]) -> Result<u8, String> {
+    let what = match args.first().map(|s| s.as_str()) {
+        None | Some("--help") => {
+            println!("Usage: km list [OPTIONS] WHAT\n\nList suites, runners, or past runs: km list suites|runners|runs\n\nArguments:\n  WHAT  [required]\n");
+            return Ok(if args.is_empty() { 2 } else { 0 });
+        }
+        Some(w) => w,
+    };
+    let s = settings();
+    match what {
+        "suites" => {
+            let dir = suites_dir(&s);
+            let paths = discover_suites(&dir);
+            if paths.is_empty() {
+                let shown = repr_path(&dir);
+                println!("No suites found in {shown}.");
+                return Ok(0);
+            }
+            let mut rows = Vec::new();
+            for p in paths {
+                match load_suite(&p) {
+                    Ok(suite) => rows.push(vec![
+                        suite.name,
+                        suite.version,
+                        suite.validation_status,
+                        suite.tasks.len().to_string(),
+                        p.to_string_lossy().into_owned(),
+                    ]),
+                    Err(e) => {
+                        let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("?");
+                        rows.push(vec![
+                            stem.to_string(),
+                            "?".into(),
+                            "error".into(),
+                            "?".into(),
+                            truncate(&e, 80),
+                        ]);
+                    }
+                }
+            }
+            println!(
+                "{}",
+                render_table(
+                    Some("Suites"),
+                    &["Name", "Version", "Status", "Tasks", "Path"],
+                    &rows
+                )
+            );
+            Ok(0)
+        }
+        "runners" => {
+            let rows: Vec<Vec<String>> = RUNNER_CATALOG
+                .iter()
+                .map(|(spec, kind, done, desc)| {
+                    let desc = desc.replace("\\\n", " ");
+                    vec![
+                        spec.to_string(),
+                        kind.to_string(),
+                        if *done {
+                            "yes".into()
+                        } else {
+                            "planned".into()
+                        },
+                        desc,
+                    ]
+                })
+                .collect();
+            println!(
+                "{}",
+                render_table(
+                    Some("Runners"),
+                    &["Runner spec", "Kind", "Ready", "What it is"],
+                    &rows
+                )
+            );
+            Ok(0)
+        }
+        "runs" => {
+            let store = match Store::open(&s.db_path) {
+                Ok(st) => st,
+                Err(e) => return Ok(err1(e)),
+            };
+            match store.list_runs(20) {
+                Ok(runs) if runs.is_empty() => {
+                    println!("No runs yet.");
+                    Ok(0)
+                }
+                Ok(runs) => {
+                    let rows: Vec<Vec<String>> = runs
+                        .iter()
+                        .map(|r| {
+                            vec![
+                                r.id.clone(),
+                                r.suite_name.clone(),
+                                r.status.clone(),
+                                r.runners.join(", "),
+                                format!("${:.4}", r.spent_usd),
+                                r.started_at.clone(),
+                            ]
+                        })
+                        .collect();
+                    println!(
+                        "{}",
+                        render_table(
+                            Some("Runs"),
+                            &["Run", "Suite", "Status", "Runners", "Cost ↓", "Started"],
+                            &rows
+                        )
+                    );
+                    Ok(0)
+                }
+                Err(e) => Ok(err1(e)),
+            }
+        }
+        other => Ok(err1(format!(
+            "list what? Try: suites, runners, runs (not '{other}')"
+        ))),
+    }
+}
+
+fn repr_path(p: &Path) -> String {
+    format!("'{}'", p.display())
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
+    }
+}
+
+// ---------------- run ----------------
+
+struct RunArgs {
+    suite: String,
+    runners: Vec<String>,
+    reps: i64,
+    max_usd: Option<f64>,
+    seed: i64,
+    tasks: Vec<String>,
+}
+
+fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
+    let mut suite: Option<String> = None;
+    let mut runners = Vec::new();
+    let mut tasks = Vec::new();
+    let (mut reps, mut seed, mut max_usd) = (1i64, 7i64, None);
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        let take = |i: &mut usize| -> Result<String, u8> {
+            *i += 1;
+            args.get(*i)
+                .cloned()
+                .ok_or_else(|| err1("expected a value after the flag"))
+        };
+        match a.as_str() {
+            "--help" => {
+                println!("Usage: km run [OPTIONS] SUITE\n\nRun SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n\nArguments:\n  SUITE  Suite name or path  [required]\n\nOptions:\n  -r, --runner TEXT       Runner spec (repeatable)  [default: echo, oracle]\n  --repeats INT   Tries per task, 1-10  [default: 1]\n  --max-usd FLOAT         Spend cap in USD (default MJ_MAX_USD or 1.0)\n  --seed INT              Run seed  [default: 7]\n  --task TEXT             Only these task ids (repeatable)\n  --help                  Show this message and exit.\n");
+                return Ok(None);
+            }
+            "-r" | "--runner" => runners.push(take(&mut i)?),
+            "--repeats" => {
+                reps = take(&mut i)?
+                    .parse()
+                    .map_err(|_| err1("--repeats needs an integer"))?
+            }
+            "--seed" => {
+                seed = take(&mut i)?
+                    .parse()
+                    .map_err(|_| err1("--seed needs an integer"))?
+            }
+            "--max-usd" => {
+                max_usd = Some(
+                    take(&mut i)?
+                        .parse()
+                        .map_err(|_| err1("--max-usd needs a number"))?,
+                )
+            }
+            "--task" => tasks.push(take(&mut i)?),
+            other if other.starts_with("--runner=") => runners.push(other[9..].to_string()),
+            other if other.starts_with("--task=") => tasks.push(other[7..].to_string()),
+            other if other.starts_with("--seed=") => {
+                seed = other[7..]
+                    .parse()
+                    .map_err(|_| err1("--seed needs an integer"))?
+            }
+            other if other.starts_with("--max-usd=") => {
+                max_usd = Some(
+                    other[10..]
+                        .parse()
+                        .map_err(|_| err1("--max-usd needs a number"))?,
+                )
+            }
+            other if other.starts_with("--repeats=") => {
+                reps = other[10..]
+                    .parse()
+                    .map_err(|_| err1("--repeats needs an integer"))?
+            }
+            other if other.starts_with('-') => {
+                return Err(err1(format!("No such option: {other}")))
+            }
+            other => {
+                if suite.is_some() {
+                    return Err(err1("unexpected extra argument"));
+                }
+                suite = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    let Some(suite) = suite else {
+        eprintln!("error: Missing argument 'SUITE'.");
+        return Err(2);
+    };
+    if runners.is_empty() {
+        runners = vec!["echo".into(), "oracle".into()];
+    }
+    Ok(Some(RunArgs {
+        suite,
+        runners,
+        reps,
+        max_usd,
+        seed,
+        tasks,
+    }))
+}
+
+fn cmd_run(args: &[String]) -> Result<u8, String> {
+    let parsed = match parse_run_args(args) {
+        Ok(Some(p)) => p,
+        Ok(None) => return Ok(0),
+        Err(code) => return Ok(code),
+    };
+    let s = settings();
+    let dir = suites_dir(&s);
+    let path = match resolve_suite(&parsed.suite, &dir) {
+        Ok(p) => p,
+        Err(e) => return Ok(err1(e)),
+    };
+    let suite = match load_suite(&path) {
+        Ok(su) => su,
+        Err(e) => return Ok(err1(e)),
+    };
+    let prices = match load_prices(Some(&s.prices_path)) {
+        Ok(p) => p,
+        Err(e) => return Ok(err1(e)),
+    };
+    let mut runners = Vec::new();
+    for spec in &parsed.runners {
+        match make_runner(spec, &prices) {
+            Ok(r) => runners.push(r),
+            Err(e) => return Ok(err1(e)),
+        }
+    }
+    let store = match Store::open(&s.db_path) {
+        Ok(st) => st,
+        Err(e) => return Ok(err1(e)),
+    };
+    let repeats_note = if parsed.reps > 1 {
+        format!(", {} tries each", parsed.reps)
+    } else {
+        String::new()
+    };
+    let on_attempt = |task_id: &str, runner_name: &str| {
+        print!("  {task_id} @ {runner_name} … ");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+    };
+    let on_result = |r: &ResultRecord| {
+        let mark = if r.status == "skipped" {
+            "skipped"
+        } else if r.status != "ok" {
+            "error"
+        } else if r.passed == Some(true) {
+            "✓"
+        } else if r.passed == Some(false) {
+            "✗"
+        } else {
+            "…"
+        };
+        let score = r.score.map(|v| format!(" {v:.2}")).unwrap_or_default();
+        let timed = r
+            .latency_s
+            .map(|s| {
+                if s >= 10.0 {
+                    format!(" ({s:.1}s)")
+                } else {
+                    format!(" ({s:.3}s)")
+                }
+            })
+            .unwrap_or_default();
+        println!(
+            "\r{mark}{score} · {} @ {}{timed}      ",
+            r.task_id, r.runner
+        );
+    };
+    let on_start = |run_id: &str| {
+        println!(
+            "Run {run_id} · {} v{}{}",
+            suite.name, suite.version, repeats_note
+        );
+    };
+    let callbacks = RunCallbacks {
+        on_start: Some(&on_start),
+        on_attempt: Some(&on_attempt),
+        on_result: Some(&on_result),
+    };
+    match run_suite(
+        &suite,
+        &runners,
+        &store,
+        &s,
+        parsed.seed,
+        parsed.reps,
+        parsed.max_usd,
+        if parsed.tasks.is_empty() {
+            None
+        } else {
+            Some(&parsed.tasks)
+        },
+        &callbacks,
+        None,
+    ) {
+        Ok(summary) => {
+            finish(&store, &summary.run_id, &summary.run_dir, true);
+            Ok(0)
+        }
+        Err(PreflightError(problems)) => {
+            for p in &problems {
+                eprintln!("error: refused to run: {p}");
+            }
+            Ok(1)
+        }
+    }
+}
+
+fn finish(store: &Store, run_id: &str, run_dir: &Path, announce: bool) {
+    let written = write_outputs(store, run_id, run_dir);
+    let report = match build_report(store, run_id) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let headers: Vec<String> = LEADERBOARD_HEADERS.iter().map(|s| s.to_string()).collect();
+    println!(
+        "{}",
+        render_table(
+            Some("Leaderboard"),
+            &headers,
+            &report
+                .rows
+                .iter()
+                .map(leaderboard_cells)
+                .collect::<Vec<_>>(),
+        )
+    );
+    if !report.verdicts.is_empty() {
+        let headers: Vec<String> = VERDICT_HEADERS.iter().map(|s| s.to_string()).collect();
+        println!(
+            "{}",
+            render_table(
+                Some("Is the difference real?"),
+                &headers,
+                &report
+                    .verdicts
+                    .iter()
+                    .map(verdict_cells)
+                    .collect::<Vec<_>>(),
+            )
+        );
+        for v in &report.verdicts {
+            println!("  {}", v.explanation);
+        }
+        println!("Too close to call means the gap could be chance, not that they are equal.");
+    }
+    println!("{DEFINITIONS}");
+    if announce {
+        let raw = run_dir.display();
+        println!("Run {run_id} · raw outputs in {raw}/");
+        println!("Report: {}", written.markdown.display());
+        println!("Report: {}", written.html.display());
+        println!("Report: {}", written.results.display());
+    }
+}
+
+// ---------------- export / report / import ----------------
+
+fn positional(args: &[String]) -> (Vec<String>, BTreeMap<String, Option<String>>) {
+    let mut pos = Vec::new();
+    let mut opts: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if let Some((k, v)) = a.split_once('=') {
+            if k.starts_with("--") {
+                opts.insert(k.to_string(), Some(v.to_string()));
+                i += 1;
+                continue;
+            }
+        }
+        if a.starts_with("--") {
+            let next = args.get(i + 1);
+            if matches!(a.as_str(), "--output" | "-o" | "--name") {
+                opts.insert(a.clone(), next.cloned());
+                i += 2;
+            } else {
+                opts.insert(a.clone(), None);
+                i += 1;
+            }
+        } else {
+            pos.push(a.clone());
+            i += 1;
+        }
+    }
+    (pos, opts)
+}
+
+fn cmd_export(args: &[String]) -> Result<u8, String> {
+    let (pos, opts) = positional(args);
+    if opts.contains_key("--help") {
+        println!("Usage: km export [OPTIONS] [RUN_ID]\n\nWrite the schema-1.1 JSON export (default: latest run). Outputs are omitted unless --include-outputs is explicit.\n\nOptions:\n  --include-outputs      Include (possibly sensitive) model output text\n  -o, --output PATH      Where to write (default: runs/<id>/results.json)\n  --help                 Show this message and exit.\n");
+        return Ok(0);
+    }
+    let s = settings();
+    let store = match Store::open(&s.db_path) {
+        Ok(st) => st,
+        Err(e) => return Ok(err1(e)),
+    };
+    let run_id = match pos
+        .first()
+        .cloned()
+        .or_else(|| store.latest_run_id().ok().flatten())
+    {
+        Some(id) => id,
+        None => return Ok(err1("no runs yet")),
+    };
+    let run = match store.get_run(&run_id) {
+        Ok(Some(r)) => r,
+        _ => return Ok(err1(format!("no run '{run_id}'"))),
+    };
+    let destination = opts
+        .get("--output")
+        .or_else(|| opts.get("-o"))
+        .cloned()
+        .flatten()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&run.artifacts_dir).join("results.json"));
+    match krutrim_evaluator::export::write_export(
+        &store,
+        &run_id,
+        &destination,
+        opts.contains_key("--include-outputs"),
+    ) {
+        Ok(path) => {
+            println!("Export: {}", path.display());
+            Ok(0)
+        }
+        Err(e) => Ok(err1(e)),
+    }
+}
+
+fn cmd_report(args: &[String]) -> Result<u8, String> {
+    let (pos, opts) = positional(args);
+    if opts.contains_key("--help") {
+        println!("Usage: km report [OPTIONS] [RUN_ID]\n\nPrint the leaderboard for RUN_ID (default: latest run).\n");
+        return Ok(0);
+    }
+    let s = settings();
+    let store = match Store::open(&s.db_path) {
+        Ok(st) => st,
+        Err(e) => return Ok(err1(e)),
+    };
+    let run_id = match pos
+        .first()
+        .cloned()
+        .or_else(|| store.latest_run_id().ok().flatten())
+    {
+        Some(id) => id,
+        None => return Ok(err1("no runs yet")),
+    };
+    let run = match store.get_run(&run_id) {
+        Ok(Some(r)) => r,
+        _ => return Ok(err1(format!("no run '{run_id}'"))),
+    };
+    finish(&store, &run_id, Path::new(&run.artifacts_dir), false);
+    Ok(0)
+}
+
+fn cmd_import(args: &[String]) -> Result<u8, String> {
+    let (pos, opts) = positional(args);
+    if opts.contains_key("--help") || pos.is_empty() {
+        println!("Usage: km import-suite [OPTIONS] SOURCE [OUTPUT]\n\nImport a foreign suite directory into Mulyankan YAML.\n\nArguments:\n  SOURCE  Directory to import  [required]\n  OUTPUT  Where to write YAML (default: suites/<name>.yaml)\n\nOptions:\n  --name TEXT  Suite name (default: directory name)\n  --help       Show this message and exit.\n");
+        return Ok(if pos.is_empty() && !opts.contains_key("--help") {
+            2
+        } else {
+            0
+        });
+    }
+    let source = PathBuf::from(&pos[0]);
+    if !source.is_dir() {
+        return Ok(err1(format!("not a directory: {}", source.display())));
+    }
+    let name = opts.get("--name").cloned().flatten();
+    match krutrim_evaluator::importer::import_suite(&source, name.as_deref()) {
+        Ok(imported) => {
+            let out = pos.get(1).cloned().map(PathBuf::from).unwrap_or_else(|| {
+                PathBuf::from("suites")
+                    .join(format!("{}.yaml", importer_slug(&imported.suite.name)))
+            });
+            if let Some(parent) = out.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let text = krutrim_evaluator::importer::suite_to_yaml(&imported.suite);
+            if let Err(e) = std::fs::write(&out, text) {
+                return Ok(err1(e));
+            }
+            println!(
+                "Imported {} task{} → {}",
+                imported.suite.tasks.len(),
+                if imported.suite.tasks.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                out.display()
+            );
+            if !imported.unhandled.is_empty() {
+                println!("Could not import (left alone):");
+                for f in &imported.unhandled {
+                    println!("  - {f}");
+                }
+            }
+            Ok(0)
+        }
+        Err(e) => Ok(err1(e)),
+    }
+}
+
+fn importer_slug(name: &str) -> String {
+    // Path(name).stem in Python
+    let base = Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    base.to_string()
+}
+
+// ---------------- rich-style table ----------------
+
+fn display_width(s: &str) -> usize {
+    // Combining marks and zero-width chars count 0; most other code points 1;
+    // wide CJK/fullwidth blocks 2. Good enough for the tables km prints.
+    s.chars()
+        .map(|c| {
+            let u = c as u32;
+            if (0x300..=0x36f).contains(&u)
+                || (0x900..=0x97f).contains(&u)
+                    && matches!(u, 0x901..=0x903 | 0x93a..=0x94f | 0x951..=0x957 | 0x962..=0x963)
+                || u == 0x200d
+            {
+                0
+            } else if (0x1100..=0x115f).contains(&u)
+                || (0x2e80..=0x9fff).contains(&u)
+                || (0xa000..=0xa4cf).contains(&u)
+                || (0xac00..=0xd7a3).contains(&u)
+                || (0xf900..=0xfaff).contains(&u)
+                || (0xfe30..=0xfe6f).contains(&u)
+                || (0xff00..=0xff60).contains(&u)
+                || (0x1f300..=0x1f9ff).contains(&u)
+            {
+                2
+            } else {
+                1
+            }
+        })
+        .sum()
+}
+
+fn pad(s: &str, width: usize) -> String {
+    let w = display_width(s);
+    if w >= width {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(width - w))
+    }
+}
+
+fn wrap_cell(text: &str, width: usize) -> Vec<String> {
+    if display_width(text) <= width {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in text.split(' ') {
+        if cur.is_empty() {
+            cur = word.to_string();
+        } else if display_width(&cur) + 1 + display_width(word) <= width {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(cur);
+            cur = word.to_string();
+        }
+        while display_width(&cur) > width {
+            let mut taken = String::new();
+            let mut rest = String::new();
+            let mut w = 0;
+            for c in cur.chars() {
+                let cw = display_width(&c.to_string());
+                if w + cw <= width && rest.is_empty() {
+                    taken.push(c);
+                    w += cw;
+                } else {
+                    rest.push(c);
+                }
+            }
+            lines.push(taken);
+            cur = rest;
+        }
+    }
+    if !cur.is_empty() || lines.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+fn term_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|w: &usize| *w >= 40)
+        .unwrap_or(120)
+}
+
+pub fn render_table(
+    title: Option<&str>,
+    headers: &[impl AsRef<str>],
+    rows: &[Vec<String>],
+) -> String {
+    let headers: Vec<String> = headers.iter().map(|h| h.as_ref().to_string()).collect();
+    render_table_owned(title, &headers, rows)
+}
+
+fn render_table_owned(title: Option<&str>, headers: &[String], rows: &[Vec<String>]) -> String {
+    let cols = headers.len();
+    let mut widths: Vec<usize> = headers.iter().map(|h| display_width(h)).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate().take(cols) {
+            widths[i] = widths[i].max(display_width(cell));
+        }
+    }
+    let budget = term_width();
+    let total = |w: &[usize]| w.iter().sum::<usize>() + 3 * cols + 1;
+    while total(&widths) > budget {
+        let Some((idx, _)) = widths.iter().enumerate().max_by_key(|(_, w)| **w) else {
+            break;
+        };
+        if widths[idx] <= 4 {
+            break;
+        }
+        widths[idx] -= 1;
+    }
+    let line = |left: &str, mid: &str, right: &str, fill: &str| -> String {
+        let parts: Vec<String> = widths.iter().map(|w| fill.repeat(w + 2)).collect();
+        format!("{left}{}{right}", parts.join(mid))
+    };
+    let render_row = |cells: &[String], sep: &str| -> Vec<String> {
+        let wrapped: Vec<Vec<String>> = (0..cols)
+            .map(|i| wrap_cell(cells.get(i).map(|s| s.as_str()).unwrap_or(""), widths[i]))
+            .collect();
+        let height = wrapped.iter().map(|v| v.len()).max().unwrap_or(1);
+        (0..height)
+            .map(|line_no| {
+                let parts: Vec<String> = (0..cols)
+                    .map(|i| {
+                        format!(
+                            " {} ",
+                            pad(
+                                wrapped[i].get(line_no).map(|s| s.as_str()).unwrap_or(""),
+                                widths[i]
+                            )
+                        )
+                    })
+                    .collect();
+                format!("{sep}{}{sep}", parts.join(sep))
+            })
+            .collect()
+    };
+    let mut out: Vec<String> = Vec::new();
+    if let Some(t) = title {
+        out.push(t.to_string());
+    }
+    out.push(line("┏", "┳", "┓", "━"));
+    out.extend(render_row(headers, "┃"));
+    out.push(line("┡", "╇", "┩", "━"));
+    for row in rows {
+        out.extend(render_row(row, "│"));
+    }
+    out.push(line("└", "┴", "┘", "─"));
+    out.join("\n")
+}

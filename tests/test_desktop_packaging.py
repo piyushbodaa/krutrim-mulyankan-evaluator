@@ -52,15 +52,21 @@ def test_release_publishes_a_deb_with_the_website_filename():
     assert conf["bundle"]["shortDescription"]
 
 
-def test_engine_builds_stay_slim_and_keep_cli_pygments():
+def test_rust_engine_is_built_for_cli_and_desktop_without_python():
+    # The deployed binaries are Rust now (km-rs/). The Python package/wheel
+    # stays, but no PyInstaller engine may creep back into the installers.
     release = _read(".github/workflows/release.yml")
     desktop = _read(".github/workflows/desktop.yml")
     for workflow in (release, desktop):
-        assert "--strip" in workflow
-        assert "--exclude-module pygments" in workflow
-        assert "--exclude-module setuptools" in workflow
-    # The km CLI is the other PyInstaller build: Typer's rich help imports
-    # pygments, so only the desktop bridge may exclude it. The desktop
-    # exclusion is the one whose entry is desktop/sidecar/entry.py.
-    cli_block = release.split("desktop/sidecar/km_entry.py")[0].rsplit("PyInstaller", 1)[1]
-    assert "pygments" not in cli_block
+        assert "cargo build --release" in workflow
+        assert "km-desktop-engine" in workflow
+        assert "PyInstaller" not in workflow
+        assert "resources/engine/preview" in workflow
+        assert "resources/engine/suites" in workflow
+    # The CLI release keeps install.sh's asset name and layout, now static.
+    assert "x86_64-unknown-linux-musl" in release
+    assert "tar -C dist/km-linux -czf km-linux-x86_64.tar.gz km suites" in release
+    workspace = _read("km-rs/Cargo.toml")
+    assert 'name = "km"' in _read("km-rs/crates/km/Cargo.toml")
+    assert 'name = "km-desktop"' in _read("km-rs/crates/km-desktop/Cargo.toml")
+    assert "crates/evaluator" in workspace

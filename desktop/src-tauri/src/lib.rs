@@ -68,15 +68,32 @@ fn find_root() -> Option<PathBuf> {
 }
 
 fn engine_command(app: &AppHandle) -> Result<Command, String> {
-    let mut cmd = if let Ok(python) = std::env::var("KM_PYTHON") {
+    // The engine is the Rust km-desktop binary (shared evaluator crate with
+    // the km CLI). KM_ENGINE overrides it; KM_PYTHON still runs the kept
+    // Python bridge for comparison during the port.
+    let mut cmd = if let Ok(engine) = std::env::var("KM_ENGINE") {
+        Command::new(engine)
+    } else if let Ok(python) = std::env::var("KM_PYTHON") {
         let mut cmd = Command::new(python);
         cmd.arg("-m").arg("kritrim_mulyankan.desktop_bridge");
         cmd
     } else if cfg!(debug_assertions) {
-        let program = if cfg!(windows) { "python" } else { "python3" };
-        let mut cmd = Command::new(program);
-        cmd.arg("-m").arg("kritrim_mulyankan.desktop_bridge");
-        cmd
+        let dev_engine = find_root().and_then(|root| {
+            let name = if cfg!(windows) { "km-desktop.exe" } else { "km-desktop" };
+            ["debug", "release"]
+                .iter()
+                .map(|profile| root.join("km-rs").join("target").join(profile).join(name))
+                .find(|p| p.is_file())
+        });
+        match dev_engine {
+            Some(path) => Command::new(path),
+            None => {
+                let program = if cfg!(windows) { "python" } else { "python3" };
+                let mut cmd = Command::new(program);
+                cmd.arg("-m").arg("kritrim_mulyankan.desktop_bridge");
+                cmd
+            }
+        }
     } else {
         let name = if cfg!(windows) {
             "km-desktop.exe"

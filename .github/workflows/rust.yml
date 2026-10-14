@@ -1,0 +1,62 @@
+name: Rust km
+
+on:
+  pull_request:
+    paths:
+      - "km-rs/**"
+      - "suites/**"
+      - "tests/test_rust_parity.py"
+      - ".github/workflows/rust.yml"
+  push:
+    branches: [main]
+    paths:
+      - "km-rs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-parity:
+    name: Rust tests + Python parity (Linux)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Rust unit tests
+        run: cargo test --manifest-path km-rs/Cargo.toml
+      - name: Build the static km and desktop engine
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          cargo build --release --manifest-path km-rs/Cargo.toml -p km-cli --target x86_64-unknown-linux-musl
+          cargo build --release --manifest-path km-rs/Cargo.toml -p km-desktop-engine
+          ls -lh km-rs/target/x86_64-unknown-linux-musl/release/km km-rs/target/release/km-desktop
+      - name: Parity tests (Python vs Rust on the bundled suites)
+        env:
+          KM_RUST_BIN: ${{ github.workspace }}/km-rs/target/x86_64-unknown-linux-musl/release/km
+          KM_RUST_DESKTOP_BIN: ${{ github.workspace }}/km-rs/target/release/km-desktop
+        run: |
+          uv sync --group dev
+          uv run pytest tests/test_rust_parity.py -v
+
+  build-other-os:
+    name: Build km (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build km (compile check; release assets stay Linux for now)
+        shell: bash
+        run: |
+          cargo build --release --manifest-path km-rs/Cargo.toml -p km-cli
+          ls -lh km-rs/target/release/km* | head
