@@ -472,3 +472,48 @@ def test_model_runner_parity(provider: str, tmp_path: Path, monkeypatch) -> None
         return sorted(normalized, key=lambda item: json.dumps(item, sort_keys=True))
 
     assert shapes(rs_requests) == shapes(py_requests)
+
+
+def test_bare_km_piped_stays_classic() -> None:
+    """The interactive menu is TTY-only: bare `km` through a pipe must print
+    exactly the classic help, with no ANSI escapes, with or without flags."""
+    help_out = subprocess.run(
+        [str(RUST_KM), "--help"], text=True, capture_output=True, timeout=60, cwd=ROOT
+    )
+    assert help_out.returncode == 0
+    for extra in ([], ["--no-anim"]):
+        bare = subprocess.run(
+            [str(RUST_KM), *extra],
+            text=True,
+            capture_output=True,
+            timeout=60,
+            cwd=ROOT,
+            env={**os.environ, "NO_COLOR": "1"},
+        )
+        assert bare.returncode == 0, bare.stderr
+        assert bare.stdout == help_out.stdout
+        assert "\x1b[" not in bare.stdout
+
+
+def test_piped_run_has_no_ansi(tmp_path: Path) -> None:
+    runs = _run_rust(
+        ["run", "suites/example.yaml", "-r", "oracle", "-r", "echo"],
+        tmp_path / "rs",
+        {},
+    )
+    assert _one_run_dir(runs).is_dir()
+    proc = subprocess.run(
+        [str(RUST_KM), "run", "suites/example.yaml", "-r", "oracle", "--dry-run"],
+        text=True,
+        capture_output=True,
+        timeout=120,
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "MJ_RUNS_DIR": str(tmp_path / "dry"),
+            "MJ_DB": str(tmp_path / "dry/results.db"),
+            "MJ_SUITES_DIR": str(ROOT / "suites"),
+        },
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "\x1b[" not in proc.stdout + proc.stderr

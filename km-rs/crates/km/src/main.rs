@@ -8,12 +8,51 @@ use krutrim_evaluator::report::{
 };
 use krutrim_evaluator::*;
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+mod keys;
+mod tui;
+
+static NO_ANIM: AtomicBool = AtomicBool::new(false);
+static USE_COLOR: AtomicBool = AtomicBool::new(false);
+
+/// Interactive terminal session (stdin and stdout on a real, non-dumb TTY).
+/// Everything polished lives behind this; pipes/scripts keep classic output.
+fn interactive() -> bool {
+    std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(false)
+}
+
+fn color_enabled() -> bool {
+    USE_COLOR.load(Ordering::Relaxed)
+}
+
+fn anim_enabled() -> bool {
+    !NO_ANIM.load(Ordering::Relaxed)
+}
 
 fn main() -> ExitCode {
     load_dotenv();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    keys::load_keys_file();
+    // --no-anim is a global presentation switch; it is accepted anywhere
+    // and simply removed before the classic parser sees the arguments.
+    if std::env::args().any(|a| a == "--no-anim") {
+        NO_ANIM.store(true, Ordering::Relaxed);
+    }
+    if std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(false)
+    {
+        USE_COLOR.store(true, Ordering::Relaxed);
+    }
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| a != "--no-anim")
+        .collect();
     match dispatch(&args) {
         Ok(code) => ExitCode::from(code),
         Err(msg) => {
@@ -25,6 +64,20 @@ fn main() -> ExitCode {
 
 fn dispatch(args: &[String]) -> Result<u8, String> {
     let Some(cmd) = args.first() else {
+        if interactive() {
+            let outcome = tui::run(
+                tui::UiOptions {
+                    animate: anim_enabled(),
+                    color: color_enabled(),
+                    help_text: main_help(),
+                },
+                settings(),
+            );
+            return match outcome {
+                tui::Outcome::Quit => Ok(0),
+                tui::Outcome::OpenUi => cmd_ui(&[]),
+            };
+        }
         println!("{}", boxed(&main_help()));
         return Ok(0);
     };
@@ -458,12 +511,22 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
     } else {
         String::new()
     };
+    let live = std::io::stdout().is_terminal() && anim_enabled();
+    let progress = live.then(|| LiveProgress::new(&runners, selected.len() * parsed.reps as usize));
     let on_attempt = |task_id: &str, runner_name: &str| {
+        if let Some(live) = &progress {
+            live.attempt(task_id, runner_name);
+            return;
+        }
         print!("  {task_id} @ {runner_name} … ");
         use std::io::Write;
         let _ = std::io::stdout().flush();
     };
     let on_result = |r: &ResultRecord| {
+        if let Some(live) = &progress {
+            live.result(r);
+            return;
+        }
         let mark = if r.status == "skipped" {
             "skipped"
         } else if r.status != "ok" {
@@ -492,10 +555,14 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
         );
     };
     let on_start = |run_id: &str| {
-        println!(
+        let line = format!(
             "Run {run_id} · {} v{}{}",
             suite.name, suite.version, repeats_note
         );
+        match &progress {
+            Some(live) => live.println(line),
+            None => println!("{line}"),
+        }
     };
     let callbacks = RunCallbacks {
         on_start: Some(&on_start),
@@ -519,6 +586,9 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
         None,
     ) {
         Ok(summary) => {
+            if let Some(live) = &progress {
+                live.clear();
+            }
             finish(&store, &summary.run_id, &summary.run_dir, true);
             Ok(0)
         }
@@ -828,13 +898,163 @@ fn term_width() -> usize {
         .unwrap_or(120)
 }
 
+/// Indicatif-backed live progress for `km run` on a terminal: one bar per
+/// runner plus running token/USD totals. Draws to stderr; the classic
+/// stdout tables print after it clears.
+struct LiveProgress {
+    multi: indicatif::MultiProgress,
+    bars: std::cell::RefCell<Vec<(String, indicatif::ProgressBar)>>,
+    totals: indicatif::ProgressBar,
+    input_tokens: std::cell::Cell<i64>,
+    output_tokens: std::cell::Cell<i64>,
+    cost_usd: std::cell::Cell<f64>,
+    cost_known: std::cell::Cell<bool>,
+    passed: std::cell::Cell<usize>,
+    done: std::cell::Cell<usize>,
+}
+
+impl LiveProgress {
+    fn new(runners: &[Runner], attempts_per_runner: usize) -> LiveProgress {
+        let multi = indicatif::MultiProgress::new();
+        let bar_style = if color_enabled() {
+            "{spinner:.208} {msg:<28} [{bar:24.208/dim}] {pos}/{len}"
+        } else {
+            "{spinner} {msg:<28} [{bar:24}] {pos}/{len}"
+        };
+        let style = indicatif::ProgressStyle::with_template(bar_style)
+            .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
+            .progress_chars("██░")
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✓"]);
+        let mut bars = Vec::new();
+        for runner in runners {
+            let bar = multi.add(indicatif::ProgressBar::new(attempts_per_runner as u64));
+            bar.set_style(style.clone());
+            bar.set_message(runner.name.clone());
+            bar.enable_steady_tick(std::time::Duration::from_millis(90));
+            bars.push((runner.name.clone(), bar));
+        }
+        let totals = multi.add(indicatif::ProgressBar::new_spinner());
+        totals.set_message("tokens 0 in / 0 out · $0.0000 · 0 passed");
+        totals.enable_steady_tick(std::time::Duration::from_millis(120));
+        LiveProgress {
+            multi,
+            bars: std::cell::RefCell::new(bars),
+            totals,
+            input_tokens: std::cell::Cell::new(0),
+            output_tokens: std::cell::Cell::new(0),
+            cost_usd: std::cell::Cell::new(0.0),
+            cost_known: std::cell::Cell::new(true),
+            passed: std::cell::Cell::new(0),
+            done: std::cell::Cell::new(0),
+        }
+    }
+
+    fn println(&self, line: String) {
+        let _ = self.multi.println(line);
+    }
+
+    fn attempt(&self, task_id: &str, runner_name: &str) {
+        if let Some((_, bar)) = self
+            .bars
+            .borrow()
+            .iter()
+            .find(|(name, _)| name == runner_name)
+        {
+            bar.set_message(format!("{runner_name} · {task_id}"));
+        }
+    }
+
+    fn result(&self, record: &ResultRecord) {
+        if let Some((_, bar)) = self
+            .bars
+            .borrow()
+            .iter()
+            .find(|(name, _)| name == &record.runner)
+        {
+            bar.inc(1);
+            bar.set_message(record.runner.clone());
+        }
+        self.done.set(self.done.get() + 1);
+        if record.passed == Some(true) {
+            self.passed.set(self.passed.get() + 1);
+        }
+        self.input_tokens
+            .set(self.input_tokens.get() + record.input_tokens.unwrap_or(0));
+        self.output_tokens
+            .set(self.output_tokens.get() + record.output_tokens.unwrap_or(0));
+        match record.cost_usd {
+            Some(cost) => self.cost_usd.set(self.cost_usd.get() + cost),
+            None => {
+                if record.status == "ok" {
+                    self.cost_known.set(false);
+                }
+            }
+        }
+        let cost = if self.cost_known.get() {
+            format!("${:.4}", self.cost_usd.get())
+        } else {
+            "cost unknown".into()
+        };
+        self.totals.set_message(format!(
+            "tokens {} in / {} out · {cost} · {} passed · {} done",
+            self.input_tokens.get(),
+            self.output_tokens.get(),
+            self.passed.get(),
+            self.done.get()
+        ));
+        let mark = if record.status == "skipped" {
+            "skipped".to_string()
+        } else if record.status != "ok" {
+            "error".to_string()
+        } else if record.passed == Some(true) {
+            if color_enabled() {
+                "\u{1b}[32m✓\u{1b}[0m".into()
+            } else {
+                "✓".into()
+            }
+        } else if record.passed == Some(false) {
+            if color_enabled() {
+                "\u{1b}[31m✗\u{1b}[0m".into()
+            } else {
+                "✗".into()
+            }
+        } else {
+            "…".into()
+        };
+        let timed = record
+            .latency_s
+            .map(|v| format!(" ({v:.3}s)"))
+            .unwrap_or_default();
+        let _ = self.multi.println(format!(
+            "{mark} · {} @ {}{timed}",
+            record.task_id, record.runner
+        ));
+    }
+
+    fn clear(&self) {
+        for (_, bar) in self.bars.borrow().iter() {
+            bar.finish_and_clear();
+        }
+        self.totals.finish_and_clear();
+        let _ = self.multi.clear();
+    }
+}
+
 pub fn render_table(
     title: Option<&str>,
     headers: &[impl AsRef<str>],
     rows: &[Vec<String>],
 ) -> String {
     let headers: Vec<String> = headers.iter().map(|h| h.as_ref().to_string()).collect();
-    render_table_owned(title, &headers, rows)
+    let rendered = render_table_owned(title, &headers, rows);
+    if color_enabled() {
+        // Post-colour the verdict marks; widths were computed on plain text.
+        rendered
+            .replace('✓', "\u{1b}[32m✓\u{1b}[0m")
+            .replace('✗', "\u{1b}[31m✗\u{1b}[0m")
+    } else {
+        rendered
+    }
 }
 
 fn render_table_owned(title: Option<&str>, headers: &[String], rows: &[Vec<String>]) -> String {
