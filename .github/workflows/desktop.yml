@@ -38,10 +38,6 @@ jobs:
         include:
           - os: ubuntu-22.04
             platform: Linux
-          - os: windows-latest
-            platform: Windows
-          - os: macos-latest
-            platform: macOS
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
