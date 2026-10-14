@@ -689,6 +689,7 @@ dependencies = [
  "crossterm",
  "indicatif",
  "krutrim-evaluator",
+ "libc",
  "ratatui",
  "serde_json",
 ]
