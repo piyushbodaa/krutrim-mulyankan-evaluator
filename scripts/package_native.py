@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def checked(command, **kwargs):
     return subprocess.run(
-        command, check=True, capture_output=True, text=True, timeout=120, **kwargs
+        command, check=True, capture_output=True, text=True, encoding="utf-8", timeout=120, **kwargs
     )
 
 

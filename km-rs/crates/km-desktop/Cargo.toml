@@ -13,3 +13,4 @@ path = "src/main.rs"
 [dependencies]
 krutrim-evaluator = { path = "../evaluator" }
 serde_json = "1"
+getrandom = "0.2"
