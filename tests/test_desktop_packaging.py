@@ -45,7 +45,7 @@ def test_keyring_uses_a_real_platform_store_not_the_mock():
 
 def test_release_publishes_a_deb_with_the_website_filename():
     workflow = _read(".github/workflows/release.yml")
-    assert "--bundles appimage,deb" in workflow
+    assert "--bundles appimage,deb" in _read(".github/workflows/desktop.yml")
     assert "Krutrim-Mulyankan-linux.deb" in workflow
     assert "test -f release/Krutrim-Mulyankan-linux.deb" in workflow
     conf = json.loads(_read("desktop/src-tauri/tauri.conf.json"))
@@ -57,16 +57,36 @@ def test_rust_engine_is_built_for_cli_and_desktop_without_python():
     # stays, but no PyInstaller engine may creep back into the installers.
     release = _read(".github/workflows/release.yml")
     desktop = _read(".github/workflows/desktop.yml")
-    for workflow in (release, desktop):
-        assert "cargo build --release" in workflow
-        assert "km-desktop-engine" in workflow
-        assert "PyInstaller" not in workflow
-        assert "resources/engine/preview" in workflow
-        assert "resources/engine/suites" in workflow
-    # The CLI release keeps install.sh's asset name and layout, now static.
-    assert "x86_64-unknown-linux-musl" in release
-    assert "tar -C dist/km-linux -czf km-linux-x86_64.tar.gz km suites" in release
+    assert "uses: ./.github/workflows/desktop.yml" in release
+    assert "cargo build --locked --release" in desktop
+    assert "km-desktop-engine" in desktop
+    assert "PyInstaller" not in desktop
+    assert "resources/engine/preview" in desktop
+    assert "resources/engine/suites" in desktop
+    assert "x86_64-unknown-linux-musl" in desktop
+    assert "test -f release/km-linux-x86_64.tar.gz" in release
     workspace = _read("km-rs/Cargo.toml")
     assert 'name = "km"' in _read("km-rs/crates/km/Cargo.toml")
     assert 'name = "km-desktop"' in _read("km-rs/crates/km-desktop/Cargo.toml")
     assert "crates/evaluator" in workspace
+
+
+def test_native_matrix_and_release_assets_agree():
+    desktop = _read(".github/workflows/desktop.yml")
+    release = _read(".github/workflows/release.yml")
+    for runner in ("windows-2022", "macos-15", "macos-15-intel"):
+        assert f"os: {runner}" in desktop
+    for asset in (
+        "km-windows-x86_64.zip",
+        "km-macos-aarch64.tar.gz",
+        "km-macos-x86_64.tar.gz",
+        "Krutrim-Mulyankan-windows-x86_64.exe",
+        "Krutrim-Mulyankan-windows-x86_64.msi",
+        "Krutrim-Mulyankan-macos-aarch64.dmg",
+        "Krutrim-Mulyankan-macos-x86_64.dmg",
+    ):
+        assert f"test -f release/{asset}" in release
+    assert "cargo test --locked" in desktop
+    assert "python scripts/package_native.py" in desktop
+    assert "SHA256SUMS.txt" in release
+    assert "not notarized" in release
