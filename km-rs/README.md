@@ -22,9 +22,12 @@ cargo build --release --manifest-path km-rs/Cargo.toml -p km-cli \
 cargo test --manifest-path km-rs/Cargo.toml
 ```
 
-Locally measured (this machine): static musl `km` 3,746,304 bytes (the
-previous PyInstaller bundle was 23.5 MB after slimming); `km-desktop`
-3,530,696 bytes before the preview/suites resources copied beside it.
+Local Linux x86-64 GNU release measurements for v0.3.0: `km` is 5,796,360
+bytes and `km-desktop` is 4,912,968 bytes before desktop resources. Across 20
+warm `km --help` process launches, median startup was 2.07 ms; one free
+`example` oracle/echo run took 38.38 ms. These measure software overhead on one
+machine, not model speed or Windows/macOS performance. Download sizes vary by
+platform and system webview packaging.
 
 ## Parity
 

@@ -73,16 +73,23 @@ If AppImage reports that FUSE is missing, unpack the `.tar.gz` and run `AppRun` 
 
 ## Native builds and GitHub Releases
 
-`.github/workflows/build-downloads.yml` is shared by desktop CI and tagged releases.
+`.github/workflows/build-downloads.yml` is shared by desktop CI and releases.
 It builds on Ubuntu 22.04 (x86-64), Windows Server 2022 (x86-64), macOS 15
 (Apple Silicon), and macOS 15 Intel. Each runner builds its own CLI, Rust engine,
-and Tauri shell. No Python/PyInstaller engine is bundled.
+and Tauri shell. No Python/PyInstaller engine is bundled. Windows binaries statically link the
+Visual C++ runtime, so the CLI and engine need no separate VC redistributable.
 
 Pull requests, pushes to `main`, and manual runs of **Desktop installers** upload
-artifacts for review without publishing a release. Pushing a `v<version>` tag
-matching the project versions runs the same builds and publishes only after all
-platforms and the Python checks succeed. Availability means the files appear in a
-completed GitHub Release; configuring a platform does not itself make it released.
+artifacts for review. Separately, merging synchronized package version changes to
+`main` starts **Release**. It skips an already-tagged version; for a new version,
+it runs all native builds and Python checks, then creates `v<version>` at that
+exact tested commit and publishes the complete download set. An explicit matching
+`v<version>` tag remains another way to start the same release flow.
+
+Publication is serialized by version and rechecks the remote tag immediately
+before publishing. Existing tags are never moved, including when retrying a failed
+publish job. Availability means the files appear in a completed GitHub Release;
+configuring a platform does not itself make it released.
 
 | File | What it is |
 |---|---|

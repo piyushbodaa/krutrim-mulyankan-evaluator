@@ -4,14 +4,14 @@
 
 use crate::pricing::{max_input_tokens, Price, PriceTable};
 use crate::providers::{
-    call_with_retries, credentials_problem, make_adapter, provider_config, ApiError,
+    call_with_retries, credentials_problem, make_adapter, provider_config, Adapter, ApiError,
 };
 use crate::suite::{GraderSpec, Task};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -151,6 +151,22 @@ pub struct ModelState {
     pub price: Option<Price>,
     pub env: BTreeMap<String, String>,
     pub sleep: Box<dyn Fn(f64) + Send + Sync>,
+    adapter: Mutex<Arc<Adapter>>,
+}
+
+impl ModelState {
+    fn adapter(&self) -> Result<Arc<Adapter>, String> {
+        let mut cached = self.adapter.lock().map_err(|_| "Model adapter is unavailable".to_string())?;
+        // Desktop runs normally get a fresh environment snapshot at runner
+        // construction. Also honor explicit changes to this public state,
+        // without retaining old credentials or connections after a change.
+        if !cached.matches_configuration(&self.provider, &self.env) {
+            *cached = Arc::new(make_adapter(&self.provider, None, &self.env));
+        }
+        // Share the adapter and connection pool. Never hold this lock while
+        // doing network I/O; pricing/options are applied separately per task.
+        Ok(Arc::clone(&cached))
+    }
 }
 
 pub enum RunnerInner {
@@ -382,7 +398,7 @@ fn run_model(
             m.provider, m.model
         ));
     };
-    let adapter = make_adapter(&m.provider, None, &m.env);
+    let adapter = m.adapter()?;
     let cfg = provider_config(&m.provider).unwrap();
     let max_tokens = model_max_tokens(m, task);
     let (result, attempts) = call_with_retries(m.options.retries, &*m.sleep, || {
@@ -560,6 +576,7 @@ pub fn make_model_runner(
         name,
         kind: RunnerKind::Model,
         inner: RunnerInner::Model(Box::new(ModelState {
+            adapter: Mutex::new(Arc::new(make_adapter(provider, None, &env))),
             price: prices.lookup(provider, model).cloned(),
             provider: provider.to_string(),
             model: model.to_string(),
@@ -613,5 +630,33 @@ pub fn make_runner(
             _ => Err(format!("unknown runner '{spec}'; see `km list runners`")),
         },
         _ => Err(format!("unknown runner '{spec}'; see `km list runners`")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_state_keeps_adapter_until_credentials_or_endpoint_change() {
+        let mut env = BTreeMap::from([("OPENAI_API_KEY".into(), "initial-key".into())]);
+        let mut runner = make_runner("model:openai/test", &PriceTable::default(), &env).unwrap();
+        let RunnerInner::Model(state) = &mut runner.inner else { unreachable!() };
+        let first = state.adapter().unwrap();
+        env.insert("OPENAI_API_KEY".into(), "external-change".into());
+        state.options.max_tokens = Some(13);
+        state.options.temperature = Some(0.2);
+        state.model = "another-model-on-the-same-provider".into();
+        assert!(Arc::ptr_eq(&first, &state.adapter().unwrap()));
+
+        state.env.insert("OPENAI_API_KEY".into(), "rotated-key".into());
+        let rotated = state.adapter().unwrap();
+        assert!(!Arc::ptr_eq(&first, &rotated));
+        assert!(Arc::ptr_eq(&rotated, &state.adapter().unwrap()));
+
+        state.env.insert("KM_OPENAI_BASE_URL".into(), "http://localhost:1234".into());
+        let moved = state.adapter().unwrap();
+        assert!(!Arc::ptr_eq(&rotated, &moved));
+        assert!(Arc::ptr_eq(&moved, &state.adapter().unwrap()));
     }
 }

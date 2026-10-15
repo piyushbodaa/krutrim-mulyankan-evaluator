@@ -313,6 +313,10 @@ pub fn make_adapter(
 }
 
 impl Adapter {
+    pub(crate) fn matches_configuration(&self, provider: &str, env: &BTreeMap<String, String>) -> bool {
+        self.provider == provider && &self.env == env
+    }
+
     /// KM_<PROVIDER>_BASE_URL overrides for tests/mock servers; unset in
     /// normal use, where this returns exactly what the Python adapters use
     /// (plus ANTHROPIC_BASE_URL, which the Anthropic SDK also honours).

@@ -44,8 +44,9 @@ reuse the At a glance dashboard in `preview/`. Development and unsigned installe
 
 The native build workflow produces the CLI and desktop app for Linux x86-64,
 Windows x86-64, and both Apple Silicon and Intel Macs. Pull requests and manual
-runs upload build artifacts; a `v<version>` tag publishes them on GitHub Releases
-only after every platform passes. Check the release assets for current availability.
+runs upload build artifacts. Merging a version bump to `main`, or pushing a matching
+`v<version>` tag, publishes on GitHub Releases only after every platform passes.
+Check the release assets for current availability.
 
 | Platform | Desktop | CLI archive |
 |---|---|---|
@@ -59,8 +60,10 @@ Rust installed. The Python wheel remains a separate option. Releases also includ
 `SHA256SUMS`. Installers have no verified publisher certificate; macOS builds use
 an ad-hoc signature and are not notarized. See [desktop/SIGNING.md](desktop/SIGNING.md).
 
-No tag is created by the workflow itself. See [desktop/README.md](desktop/README.md)
-for native build commands and installer checks.
+For a new version merged to `main`, the release workflow creates its tag at the
+exact tested commit after all checks pass. Existing versions are skipped and tags
+are never moved. See [desktop/README.md](desktop/README.md) for native build commands
+and installer checks.
 
 More: [docs/DEPLOY.md](docs/DEPLOY.md) (launch + hosted preview), [CONTRIBUTING.md](CONTRIBUTING.md).
 

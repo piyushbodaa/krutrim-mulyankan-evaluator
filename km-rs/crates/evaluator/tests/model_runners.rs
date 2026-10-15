@@ -408,8 +408,8 @@ fn missing_key_is_a_problem_and_bad_specs_error() {
 }
 
 #[test]
-fn adapter_reuses_connection_and_does_not_replay_a_failed_post() {
-    use krutrim_evaluator::providers::{make_adapter, ApiError};
+fn runner_reuses_connection_and_does_not_replay_a_failed_post() {
+    use krutrim_evaluator::runners::RunnerInner;
     use std::time::{Duration, Instant};
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -438,6 +438,11 @@ fn adapter_reuses_connection_and_does_not_replay_a_failed_post() {
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
             assert!(length > 0);
+            if attempt == 1 {
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["max_completion_tokens"], 13);
+                assert_eq!(body["temperature"], 0.2);
+            }
             if attempt < 2 {
                 let (_, _, response) = chat_completion("pooled", 10, 2, 0);
                 write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", response.len(), response).unwrap();
@@ -458,14 +463,49 @@ fn adapter_reuses_connection_and_does_not_replay_a_failed_post() {
             std::thread::sleep(Duration::from_millis(10));
         }
     });
-    let adapter = make_adapter("openai", None, &env_for("openai", &base));
-    for _ in 0..2 {
-        let reply = adapter.complete("test", "hello", 20, 2.0, 0, None, None).unwrap();
-        assert_eq!(reply.text, "pooled");
+    let mut runner = make_runner("model:openai/gpt-test,retries=2", &prices(), &env_for("openai", &base)).unwrap();
+    let context = RunContext { timeout_s: 2.0, ..ctx() };
+    let first = runner.run(&task(), "hello", &context);
+    assert_eq!(first.output, "pooled");
+    assert!((first.usage.cost_usd.unwrap() - 0.000018).abs() < 1e-12);
+    if let RunnerInner::Model(state) = &mut runner.inner {
+        state.options.max_tokens = Some(13);
+        state.options.temperature = Some(0.2);
+        state.price.as_mut().unwrap().input = 2.0;
+        state.sleep = Box::new(|_| panic!("A failed POST response must not be retried"));
     }
-    assert!(matches!(
-        adapter.complete("test", "hello", 20, 2.0, 0, None, None),
-        Err(ApiError::Transport(_))
-    ));
+    let second = runner.run(&task(), "hello again", &context);
+    assert_eq!(second.output, "pooled");
+    assert!((second.usage.cost_usd.unwrap() - 0.000028).abs() < 1e-12);
+    let failed = runner.run(&task(), "lost response", &context);
+    assert!(failed.error.unwrap_or_default().contains("APIConnectionError"));
+    assert_eq!(failed.usage.cost_usd, None);
     server.join().unwrap();
+}
+
+#[test]
+fn runner_refreshes_adapter_when_credentials_or_endpoint_change() {
+    use krutrim_evaluator::runners::RunnerInner;
+
+    let first = start_mock(vec![chat_completion("first endpoint", 10, 2, 0)]);
+    let second = start_mock(vec![chat_completion("second endpoint", 10, 2, 0)]);
+    let mut env = env_for("openai", &first.base);
+    let mut runner = make_runner("model:openai/gpt-test", &prices(), &env).unwrap();
+    assert_eq!(runner.run(&task(), "first", &ctx()).output, "first endpoint");
+
+    // The runner uses its captured environment until it is explicitly changed
+    // (desktop creates new runners from the next run's current key snapshot).
+    env.insert("OPENAI_API_KEY".into(), "outside-snapshot".into());
+    assert_eq!(runner.run(&task(), "snapshot", &ctx()).output, "first endpoint");
+    if let RunnerInner::Model(state) = &mut runner.inner {
+        state.env.insert("OPENAI_API_KEY".into(), "rotated-key".into());
+        state.env.insert("KM_OPENAI_BASE_URL".into(), second.base.clone());
+    }
+    assert_eq!(runner.run(&task(), "changed", &ctx()).output, "second endpoint");
+    for (_, headers, _) in first.requests.lock().unwrap().iter() {
+        assert!(headers.iter().any(|(name, value)| name == "authorization" && value == "Bearer test-key"));
+    }
+    let captured = second.requests.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert!(captured[0].1.iter().any(|(name, value)| name == "authorization" && value == "Bearer rotated-key"));
 }

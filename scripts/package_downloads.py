@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -174,6 +175,7 @@ def package_cli(target: str, platform: str) -> None:
         shutil.copy2(ROOT / "km-rs/target" / target / "release" / name, payload / name)
         shutil.copytree(ROOT / "suites", payload / "suites")
         shutil.copy2(ROOT / "LICENSE", payload / "LICENSE")
+        shutil.copy2(ROOT / "NOTICE.txt", payload / "NOTICE.txt")
         if windows:
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
                 for path in sorted(payload.rglob("*")):
@@ -187,6 +189,7 @@ def package_cli(target: str, platform: str) -> None:
                 output.add(payload / name, arcname=name)
                 output.add(payload / "suites", arcname="suites")
                 output.add(payload / "LICENSE", arcname="LICENSE")
+                output.add(payload / "NOTICE.txt", arcname="NOTICE.txt")
             with tarfile.open(archive) as output:
                 output.extractall(work / "unpacked", filter="data")
         smoke_cli(work / "unpacked" / name)
@@ -279,6 +282,60 @@ def verify_release(directory: Path, version: str) -> None:
     print(f"Verified {len(expected)} release assets and wrote SHA256SUMS")
 
 
+def remote_tag_commit(tag: str) -> str | None:
+    require(bool(re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag)), "Expected a stable version tag")
+    ref = f"refs/tags/{tag}"
+    result = run(
+        ["git", "ls-remote", "--tags", "origin", ref, ref + "^{}"], cwd=ROOT, capture_output=True
+    )
+    refs = {line.split()[1]: line.split()[0] for line in result.stdout.splitlines()}
+    # An annotated tag points to a tag object; its peeled ref identifies the commit.
+    return refs.get(ref + "^{}", refs.get(ref))
+
+
+def release_plan(
+    version: str, ref_type: str, ref_name: str, commit: str, existing: str | None
+) -> dict[str, str]:
+    require(
+        bool(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version)), "Expected a stable release version"
+    )
+    require(bool(re.fullmatch(r"[0-9a-f]{40}", commit)), "Expected the exact tested commit SHA")
+    tag = f"v{version}"
+    if ref_type == "tag":
+        require(ref_name == tag, f"Tag {ref_name} does not match package version {version}")
+        require(existing == commit, f"Tag {tag} no longer points at the tested commit {commit}")
+        publish = True
+    else:
+        require(ref_type == "branch" and ref_name == "main", "Automatic releases require main")
+        publish = existing is None
+    return {"version": version, "tag": tag, "commit": commit, "publish": str(publish).lower()}
+
+
+def prepare_release(ref_type: str, ref_name: str, commit: str) -> None:
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "version"
+    ]
+    check_versions(version)
+    checked_out = run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True).stdout.strip()
+    require(checked_out == commit, "Checkout does not match the workflow's tested commit")
+    plan = release_plan(version, ref_type, ref_name, commit, remote_tag_commit(f"v{version}"))
+    with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+        output.writelines(f"{key}={value}\n" for key, value in plan.items())
+    decision = "build and publish" if plan["publish"] == "true" else "already tagged; skip"
+    print(f"{plan['tag']} at {commit}: {decision}")
+
+
+def guard_release_tag(tag: str, commit: str) -> None:
+    checked_out = run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True).stdout.strip()
+    require(checked_out == commit, "Publish checkout differs from the tested commit")
+    existing = remote_tag_commit(tag)
+    require(
+        existing in (None, commit),
+        f"Refusing to replace {tag}: it points at {existing}, not {commit}",
+    )
+    print(f"Tag guard passed: {tag} will refer to {commit}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -291,6 +348,13 @@ def main() -> None:
     command.add_argument("--root", type=Path, required=True)
     command = commands.add_parser("check-versions")
     command.add_argument("--version", required=True)
+    command = commands.add_parser("prepare-release")
+    command.add_argument("--ref-type", required=True)
+    command.add_argument("--ref-name", required=True)
+    command.add_argument("--commit", required=True)
+    command = commands.add_parser("guard-release-tag")
+    command.add_argument("--tag", required=True)
+    command.add_argument("--commit", required=True)
     command = commands.add_parser("verify-release")
     command.add_argument("--directory", type=Path, required=True)
     command.add_argument("--version", required=True)

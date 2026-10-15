@@ -9,6 +9,7 @@ import json
 import runpy
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -55,7 +56,7 @@ def test_ci_and_release_use_the_same_native_download_builds():
         assert workflow["jobs"]["downloads"]["uses"] == "./.github/workflows/build-downloads.yml"
         assert workflow["jobs"]["downloads"]["needs"] == "test"
     release = yaml.safe_load(_read(".github/workflows/release.yml"))
-    assert set(release["jobs"]["publish"]["needs"]) == {"wheel", "downloads"}
+    assert set(release["jobs"]["publish"]["needs"]) == {"prepare", "wheel", "downloads"}
     conf = json.loads(_read("desktop/src-tauri/tauri.conf.json"))
     assert conf["bundle"]["shortDescription"]
 
@@ -168,3 +169,78 @@ def test_release_versions_stay_in_sync():
     npm_lock = json.loads(_read("desktop/package-lock.json"))
     assert npm_lock["version"] == version
     assert npm_lock["packages"][""]["version"] == version
+
+
+def test_windows_cli_and_engine_include_the_visual_cpp_runtime():
+    config = tomllib.loads(_read(".cargo/config.toml"))
+    flags = config["target"]["x86_64-pc-windows-msvc"]["rustflags"]
+    assert "target-feature=+crt-static" in flags
+
+
+def test_release_triggers_and_publisher_use_the_validated_version_and_commit():
+    # BaseLoader preserves YAML's `on` as a string rather than a YAML 1.1 boolean.
+    release = yaml.load(_read(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+    trigger = release["on"]["push"]
+    assert trigger["branches"] == ["main"]
+    assert trigger["tags"] == ["v*"]
+    assert "pyproject.toml" in trigger["paths"]
+    jobs = release["jobs"]
+    assert jobs["test"]["needs"] == "prepare"
+    assert jobs["test"]["if"] == "needs.prepare.outputs.publish == 'true'"
+    publish = jobs["publish"]
+    assert publish["concurrency"]["group"] == "release-publish-${{ needs.prepare.outputs.tag }}"
+    steps = publish["steps"]
+    action = next(step for step in steps if step.get("uses", "").startswith("softprops/"))
+    assert action["with"]["tag_name"] == "${{ needs.prepare.outputs.tag }}"
+    assert action["with"]["target_commitish"] == "${{ needs.prepare.outputs.commit }}"
+    assert any("guard-release-tag" in step.get("run", "") for step in steps[: steps.index(action)])
+
+
+@pytest.mark.parametrize("existing", [None, "a" * 40, "b" * 40])
+def test_main_version_release_skips_any_existing_tag(existing):
+    plan = PACKAGING["release_plan"]("1.2.3", "branch", "main", "a" * 40, existing)
+    assert plan == {
+        "version": "1.2.3",
+        "tag": "v1.2.3",
+        "commit": "a" * 40,
+        "publish": "true" if existing is None else "false",
+    }
+
+
+def test_explicit_tag_release_and_retry_require_the_original_commit():
+    plan = PACKAGING["release_plan"]("1.2.3", "tag", "v1.2.3", "a" * 40, "a" * 40)
+    assert plan["publish"] == "true"
+    for existing in (None, "b" * 40):
+        with pytest.raises(RuntimeError, match="no longer points"):
+            PACKAGING["release_plan"]("1.2.3", "tag", "v1.2.3", "a" * 40, existing)
+
+
+@pytest.mark.parametrize(
+    ("version", "ref_type", "ref_name", "commit"),
+    [
+        ("1.2.3", "tag", "v1.2.2", "a" * 40),
+        ("1.2.3", "branch", "feature", "a" * 40),
+        ("1.2.3", "branch", "main", "main"),
+        ("1.2.3-beta", "branch", "main", "a" * 40),
+    ],
+)
+def test_release_rejects_wrong_versions_branches_or_ambiguous_commits(
+    version, ref_type, ref_name, commit
+):
+    with pytest.raises(RuntimeError):
+        PACKAGING["release_plan"](version, ref_type, ref_name, commit, "a" * 40)
+
+
+def test_remote_annotated_tag_is_compared_by_its_peeled_commit(monkeypatch):
+    lookup = PACKAGING["remote_tag_commit"]
+    stdout = f"{'b' * 40}\trefs/tags/v1.2.3\n{'a' * 40}\trefs/tags/v1.2.3^{{}}\n"
+    monkeypatch.setitem(lookup.__globals__, "run", lambda *a, **k: SimpleNamespace(stdout=stdout))
+    assert lookup("v1.2.3") == "a" * 40
+
+
+def test_publish_guard_rejects_tag_moved_during_the_build(monkeypatch):
+    guard = PACKAGING["guard_release_tag"]
+    monkeypatch.setitem(guard.__globals__, "run", lambda *a, **k: SimpleNamespace(stdout="a" * 40))
+    monkeypatch.setitem(guard.__globals__, "remote_tag_commit", lambda tag: "b" * 40)
+    with pytest.raises(RuntimeError, match="Refusing to replace"):
+        guard("v1.2.3", "a" * 40)

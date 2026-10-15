@@ -1,11 +1,19 @@
-# Pushing v<version> publishes downloads after the same native builds as desktop CI.
+# A new version merged to main, or an explicit v<version> tag, publishes downloads
+# only after the same native builds as desktop CI. Existing main versions skip.
 # Assets have no publisher signature/notarization; see desktop/SIGNING.md.
 name: Release
 
 on:
   push:
+    branches: [main]
     tags:
       - "v*"
+    paths:
+      - pyproject.toml
+      - km-rs/Cargo.toml
+      - desktop/package.json
+      - desktop/src-tauri/Cargo.toml
+      - desktop/src-tauri/tauri.conf.json
 
 permissions:
   contents: read
@@ -15,25 +23,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: Decide whether this version needs a release
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.version.outputs.commit }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate versions and check the remote tag
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          TESTED_COMMIT: ${{ github.sha }}
+        run: python scripts/package_downloads.py prepare-release --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --commit "$TESTED_COMMIT"
+
   test:
     name: Tests
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - name: Check versions, lint, and test
+      - name: Lint and test
         run: |
           uv sync --locked --group dev
-          uv run --locked python scripts/package_downloads.py check-versions --version "${GITHUB_REF_NAME#v}"
           uv run --locked ruff check .
           uv run --locked ruff format --check .
           uv run --locked pytest
 
   wheel:
     name: Python wheel
-    needs: test
+    needs: [prepare, test]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -41,9 +71,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build the wheel
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           uv build --locked --wheel
-          test -f "dist/kritrim_mulyankan-${GITHUB_REF_NAME#v}-py3-none-any.whl"
+          test -f "dist/kritrim_mulyankan-${RELEASE_VERSION}-py3-none-any.whl"
       - uses: actions/upload-artifact@v4
         with:
           name: wheel
@@ -57,8 +89,11 @@ jobs:
 
   publish:
     name: GitHub Release
-    needs: [wheel, downloads]
+    needs: [prepare, wheel, downloads]
     runs-on: ubuntu-22.04
+    concurrency:
+      group: release-publish-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -71,10 +106,18 @@ jobs:
           path: release
           merge-multiple: true
       - name: Verify the complete download set and write checksums
-        run: python scripts/package_downloads.py verify-release --directory release --version "${GITHUB_REF_NAME#v}"
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: python scripts/package_downloads.py verify-release --directory release --version "$RELEASE_VERSION"
+      - name: Refuse a tag that moved while the builds ran
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          TESTED_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: python scripts/package_downloads.py guard-release-tag --tag "$RELEASE_TAG" --commit "$TESTED_COMMIT"
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ needs.prepare.outputs.commit }}
           draft: false
           prerelease: false
           make_latest: true

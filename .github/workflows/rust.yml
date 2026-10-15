@@ -3,6 +3,7 @@ name: Rust km
 on:
   pull_request:
     paths:
+      - ".cargo/**"
       - "km-rs/**"
       - "suites/**"
       - "tests/test_rust_parity.py"
@@ -10,6 +11,7 @@ on:
   push:
     branches: [main]
     paths:
+      - ".cargo/**"
       - "km-rs/**"
   workflow_dispatch:
 
