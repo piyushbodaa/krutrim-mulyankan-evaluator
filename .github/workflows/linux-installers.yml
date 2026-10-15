@@ -1,0 +1,171 @@
+name: Graphical Linux installation
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/linux-installers.yml
+      - desktop/linux-installer/**
+      - scripts/fetch_linux_release.py
+      - tests/test_linux_installer.py
+      - tests/test_fetch_linux_release.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/linux-installers.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release to add Linux installers to
+        required: true
+        default: v0.3.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-installers-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || 'v0.3.0' }}
+
+jobs:
+  setup-and-rpm:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    outputs:
+      source_date_epoch: ${{ steps.source.outputs.epoch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record the source packaging timestamp
+        id: source
+        run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v5
+      - name: Install native build and isolated GUI test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev \
+            libwebkit2gtk-4.1-0 libarchive-tools desktop-file-utils rpm \
+            xvfb xdotool imagemagick
+      - name: Test installer behavior and release-input verification
+        run: |
+          uv sync --locked --group dev
+          uv run ruff check desktop/linux-installer scripts/fetch_linux_release.py tests/test_linux_installer.py tests/test_fetch_linux_release.py tests/smoke_linux_setup.py
+          uv run ruff format --check desktop/linux-installer tests/test_linux_installer.py scripts/fetch_linux_release.py tests/test_fetch_linux_release.py tests/smoke_linux_setup.py
+          mkdir -p dist/inspection
+          KM_TEST_GUI=1 KM_SETUP_SCREENSHOT="$PWD/dist/inspection/linux-setup.png" xvfb-run -a \
+            uv run pytest tests/test_linux_installer.py tests/test_fetch_linux_release.py tests/test_desktop_packaging.py
+      - name: Download and verify the unchanged released application
+        run: python scripts/fetch_linux_release.py --tag "$RELEASE_TAG" --directory inputs
+      - name: Build graphical setup and native RPM
+        run: |
+          python desktop/linux-installer/build.py \
+            --appimage inputs/Krutrim-Mulyankan-linux.AppImage \
+            --version "${RELEASE_TAG#v}" \
+            --output dist/downloads/Krutrim-Mulyankan-linux-setup.tar.gz
+          python scripts/package_downloads.py package-rpm-from-deb --deb inputs/Krutrim-Mulyankan-linux.deb
+          cp inputs/release-inputs.json dist/downloads/linux-installer-source.json
+      - name: Install and open the real app, reopen from its menu entry, and remove
+        run: |
+          xvfb-run -a python tests/smoke_linux_setup.py \
+            --archive dist/downloads/Krutrim-Mulyankan-linux-setup.tar.gz \
+            --screenshots dist/inspection
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-setup-and-rpm
+          path: dist/downloads/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-installation-inspection
+          path: dist/inspection/*
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-linux-deb
+          path: inputs/Krutrim-Mulyankan-linux.deb
+          if-no-files-found: error
+
+  arch:
+    needs: setup-and-rpm
+    runs-on: ubuntu-22.04
+    container: archlinux:base-devel
+    timeout-minutes: 15
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.setup-and-rpm.outputs.source_date_epoch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-linux-deb
+          path: inputs
+      - name: Build and inspect the native Arch package as an unprivileged user
+        run: |
+          pacman -Syu --noconfirm --needed python libarchive zstd desktop-file-utils
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE' && python scripts/package_downloads.py package-arch-from-deb --deb inputs/Krutrim-Mulyankan-linux.deb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arch
+          path: dist/downloads/Krutrim-Mulyankan-linux.pkg.tar.zst
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [setup-and-rpm, arch]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-setup-and-rpm
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-arch
+          path: release
+      - name: Verify the complete installer set and create separate additive checksums
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('release')
+          expected = {'Krutrim-Mulyankan-linux-setup.tar.gz', 'Krutrim-Mulyankan-linux.rpm',
+                      'Krutrim-Mulyankan-linux.pkg.tar.zst', 'linux-installer-source.json'}
+          assert {p.name for p in root.iterdir()} == expected
+          assert json.loads((root/'linux-installer-source.json').read_text())['tag'] == os.environ['RELEASE_TAG']
+          lines = []
+          for name in sorted(expected):
+              path = root/name
+              assert path.stat().st_size > 0
+              with path.open('rb') as source:
+                  lines.append(hashlib.file_digest(source, 'sha256').hexdigest() + '  ' + name)
+          (root/'LINUX-INSTALLER-SHA256SUMS').write_text('\n'.join(lines)+'\n')
+          PY
+      - name: Publish only new installer assets; keep all existing application downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$RELEASE_TAG" --json tagName,isDraft,isPrerelease,assets > existing.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          release = json.loads(Path('existing.json').read_text())
+          assert release['tagName'] == os.environ['RELEASE_TAG']
+          assert not release['isDraft'] and not release['isPrerelease']
+          existing = {a['name'] for a in release['assets']}
+          collisions = existing & {p.name for p in Path('release').iterdir()}
+          assert not collisions, f'Refusing to replace existing release assets: {collisions}'
+          PY
+          gh release upload "$RELEASE_TAG" release/*

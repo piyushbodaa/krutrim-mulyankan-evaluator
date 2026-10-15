@@ -8,6 +8,7 @@ import hashlib
 import json
 import plistlib
 import runpy
+import tarfile
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,7 +94,7 @@ def test_native_matrix_uses_matching_architecture_and_installer_formats():
             "ubuntu-22.04",
             "x86_64-unknown-linux-musl",
             "x86_64-unknown-linux-gnu",
-            "appimage,deb",
+            "appimage,deb,rpm",
         ),
         (
             "windows-x86_64",
@@ -123,6 +124,9 @@ def test_release_assets_match_the_download_contract():
     expected = {
         "Krutrim-Mulyankan-linux.AppImage",
         "Krutrim-Mulyankan-linux.deb",
+        "Krutrim-Mulyankan-linux.rpm",
+        "Krutrim-Mulyankan-linux.pkg.tar.zst",
+        "Krutrim-Mulyankan-linux-setup.tar.gz",
         "km-desktop-linux.tar.gz",
         "Krutrim-Mulyankan-windows.exe",
         "Krutrim-Mulyankan-mac-arm64.dmg",
@@ -138,6 +142,60 @@ def test_release_assets_match_the_download_contract():
     publish = next(step for step in steps if step.get("uses", "").startswith("softprops/"))
     files = {Path(path).name for path in publish["with"]["files"].splitlines()}
     assert files == expected | {"kritrim_mulyankan-*.whl", "SHA256SUMS"}
+
+
+def test_arch_payload_has_stable_metadata_and_keeps_executable_bits(tmp_path):
+    payload = tmp_path / "payload"
+    binaries = payload / "usr/bin"
+    binaries.mkdir(parents=True)
+    binary = binaries / "krutrim-mulyankan-desktop"
+    binary.write_bytes(b"native executable")
+    binary.chmod(0o775)
+    data = payload / "usr/NOTICE.txt"
+    data.write_text("notice", encoding="utf-8")
+    data.chmod(0o664)
+    (binaries / "krutrim-mulyankan").symlink_to(binary.name)
+    first = tmp_path / "first.tar"
+    second = tmp_path / "second.tar"
+    PACKAGING["archive_payload"](payload, first, 1700000000)
+    # A different umask and modified file times must not alter package input.
+    binary.chmod(0o755)
+    data.chmod(0o644)
+    PACKAGING["archive_payload"](payload, second, 1700000000)
+    assert first.read_bytes() == second.read_bytes()
+    with tarfile.open(first) as archive:
+        members = {member.name: member for member in archive.getmembers()}
+        assert members["usr/bin/krutrim-mulyankan-desktop"].mode == 0o755
+        assert members["usr/NOTICE.txt"].mode == 0o644
+        assert members["usr/bin/krutrim-mulyankan"].issym()
+        assert members["usr/bin/krutrim-mulyankan"].linkname == binary.name
+        assert all(member.uid == member.gid == 0 for member in members.values())
+        assert all(member.mtime == 1700000000 for member in members.values())
+
+
+@pytest.mark.parametrize(
+    "version,digest", [("1.2.3; touch /tmp/injected", "a" * 64), ("1.2.3", "not a digest")]
+)
+def test_arch_recipe_rejects_unsafe_version_or_payload_checksum(version, digest):
+    with pytest.raises(RuntimeError):
+        PACKAGING["arch_pkgbuild"](version, digest)
+
+
+def test_native_linux_builds_declare_runtime_dependencies_and_build_arch_package():
+    linux = json.loads(_read("desktop/src-tauri/tauri.linux.conf.json"))
+    rpm = linux["bundle"]["linux"]["rpm"]
+    # RPM has no Debian-style automatic dependency inference. The WebKit ABI
+    # capability works with both Fedora and openSUSE package naming.
+    assert "libwebkit2gtk-4.1.so.0()(64bit)" in rpm["depends"]
+    assert "libgtk-3.so.0()(64bit)" in rpm["depends"]
+    assert "xdg-utils" in rpm["depends"]
+    workflow = yaml.safe_load(_read(".github/workflows/build-downloads.yml"))
+    steps = workflow["jobs"]["build"]["steps"]
+    arch = next(
+        step for step in steps if step.get("name") == "Build and verify the native Arch package"
+    )
+    assert "runuser -u builder -- python scripts/package_downloads.py package-arch" in arch["run"]
+    assert "SOURCE_DATE_EPOCH" in arch["run"]
 
 
 def test_release_verification_rejects_incomplete_downloads_and_hashes_all_assets(tmp_path):
