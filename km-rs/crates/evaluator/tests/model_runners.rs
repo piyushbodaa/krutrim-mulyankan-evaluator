@@ -57,7 +57,7 @@ fn start_mock(responses: Vec<(u16, Vec<(String, String)>, String)>) -> Mock {
                 q.first().cloned().unwrap()
             };
             let mut head = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n",
                 text.len()
             );
             for (k, v) in extra {
@@ -405,4 +405,67 @@ fn missing_key_is_a_problem_and_bad_specs_error() {
         named.name,
         "model:anthropic/claude-opus-5-5,effort=high,max_tokens=900"
     );
+}
+
+#[test]
+fn adapter_reuses_connection_and_does_not_replay_a_failed_post() {
+    use krutrim_evaluator::providers::{make_adapter, ApiError};
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        for attempt in 0..3 {
+            let mut first = String::new();
+            assert!(reader.read_line(&mut first).unwrap() > 0, "connection was not reused");
+            assert!(first.starts_with("POST "));
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                assert!(reader.read_line(&mut header).unwrap() > 0);
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            assert!(length > 0);
+            if attempt < 2 {
+                let (_, _, response) = chat_completion("pooled", 10, 2, 0);
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", response.len(), response).unwrap();
+                stream.flush().unwrap();
+            }
+        }
+        // The third request was received, but its response was lost. Reusing
+        // connections must never turn that into another billable POST.
+        drop(reader);
+        drop(stream);
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                other => panic!("unexpected connection after lost POST response: {other:?}"),
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    let adapter = make_adapter("openai", None, &env_for("openai", &base));
+    for _ in 0..2 {
+        let reply = adapter.complete("test", "hello", 20, 2.0, 0, None, None).unwrap();
+        assert_eq!(reply.text, "pooled");
+    }
+    assert!(matches!(
+        adapter.complete("test", "hello", 20, 2.0, 0, None, None),
+        Err(ApiError::Transport(_))
+    ));
+    server.join().unwrap();
 }

@@ -4,11 +4,17 @@ These read the committed config/UI/workflow files. They do not build
 anything; the desktop workflow does the real building.
 """
 
+import hashlib
 import json
+import runpy
 import tomllib
 from pathlib import Path
 
+import pytest
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
+PACKAGING = runpy.run_path(str(ROOT / "scripts/package_downloads.py"))
 
 
 def _read(path: str) -> str:
@@ -43,11 +49,13 @@ def test_keyring_uses_a_real_platform_store_not_the_mock():
     assert "keyring" not in cargo["dependencies"]
 
 
-def test_release_publishes_a_deb_with_the_website_filename():
-    workflow = _read(".github/workflows/release.yml")
-    assert "--bundles appimage,deb" in workflow
-    assert "Krutrim-Mulyankan-linux.deb" in workflow
-    assert "test -f release/Krutrim-Mulyankan-linux.deb" in workflow
+def test_ci_and_release_use_the_same_native_download_builds():
+    for filename in ("desktop.yml", "release.yml"):
+        workflow = yaml.safe_load(_read(f".github/workflows/{filename}"))
+        assert workflow["jobs"]["downloads"]["uses"] == "./.github/workflows/build-downloads.yml"
+        assert workflow["jobs"]["downloads"]["needs"] == "test"
+    release = yaml.safe_load(_read(".github/workflows/release.yml"))
+    assert set(release["jobs"]["publish"]["needs"]) == {"wheel", "downloads"}
     conf = json.loads(_read("desktop/src-tauri/tauri.conf.json"))
     assert conf["bundle"]["shortDescription"]
 
@@ -55,18 +63,108 @@ def test_release_publishes_a_deb_with_the_website_filename():
 def test_rust_engine_is_built_for_cli_and_desktop_without_python():
     # The deployed binaries are Rust now (km-rs/). The Python package/wheel
     # stays, but no PyInstaller engine may creep back into the installers.
-    release = _read(".github/workflows/release.yml")
-    desktop = _read(".github/workflows/desktop.yml")
-    for workflow in (release, desktop):
-        assert "cargo build --release" in workflow
-        assert "km-desktop-engine" in workflow
-        assert "PyInstaller" not in workflow
-        assert "resources/engine/preview" in workflow
-        assert "resources/engine/suites" in workflow
-    # The CLI release keeps install.sh's asset name and layout, now static.
-    assert "x86_64-unknown-linux-musl" in release
-    assert "tar -C dist/km-linux -czf km-linux-x86_64.tar.gz km suites" in release
-    workspace = _read("km-rs/Cargo.toml")
-    assert 'name = "km"' in _read("km-rs/crates/km/Cargo.toml")
-    assert 'name = "km-desktop"' in _read("km-rs/crates/km-desktop/Cargo.toml")
-    assert "crates/evaluator" in workspace
+    workflow = yaml.safe_load(_read(".github/workflows/build-downloads.yml"))
+    commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["build"]["steps"])
+    assert "cargo build --locked --release" in commands
+    assert "-p km-cli" in commands and "-p km-desktop-engine" in commands
+    assert "cargo test --locked" in commands
+    assert "npm ci" in commands
+    assert "PyInstaller" not in commands
+    workspace = tomllib.loads(_read("km-rs/Cargo.toml"))
+    assert "crates/evaluator" in workspace["workspace"]["members"]
+    cli = tomllib.loads(_read("km-rs/crates/km/Cargo.toml"))
+    engine = tomllib.loads(_read("km-rs/crates/km-desktop/Cargo.toml"))
+    assert cli["bin"][0]["name"] == "km"
+    assert engine["bin"][0]["name"] == "km-desktop"
+
+
+def test_native_matrix_uses_matching_architecture_and_installer_formats():
+    workflow = yaml.safe_load(_read(".github/workflows/build-downloads.yml"))
+    rows = workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+    actual = {
+        (row["platform"], row["os"], row["cli-target"], row["desktop-target"], row["bundles"])
+        for row in rows
+    }
+    assert actual == {
+        (
+            "linux-x86_64",
+            "ubuntu-22.04",
+            "x86_64-unknown-linux-musl",
+            "x86_64-unknown-linux-gnu",
+            "appimage,deb",
+        ),
+        (
+            "windows-x86_64",
+            "windows-2022",
+            "x86_64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc",
+            "nsis",
+        ),
+        (
+            "macos-aarch64",
+            "macos-15",
+            "aarch64-apple-darwin",
+            "aarch64-apple-darwin",
+            "dmg",
+        ),
+        (
+            "macos-x86_64",
+            "macos-15-intel",
+            "x86_64-apple-darwin",
+            "x86_64-apple-darwin",
+            "dmg",
+        ),
+    }
+
+
+def test_release_assets_match_the_download_contract():
+    expected = {
+        "Krutrim-Mulyankan-linux.AppImage",
+        "Krutrim-Mulyankan-linux.deb",
+        "km-desktop-linux.tar.gz",
+        "Krutrim-Mulyankan-windows.exe",
+        "Krutrim-Mulyankan-mac-arm64.dmg",
+        "Krutrim-Mulyankan-mac-x86_64.dmg",
+        "km-linux-x86_64.tar.gz",
+        "km-windows-x86_64.zip",
+        "km-macos-aarch64.tar.gz",
+        "km-macos-x86_64.tar.gz",
+    }
+    assert PACKAGING["ASSETS"] == expected
+    release = yaml.safe_load(_read(".github/workflows/release.yml"))
+    steps = release["jobs"]["publish"]["steps"]
+    publish = next(step for step in steps if step.get("uses", "").startswith("softprops/"))
+    files = {Path(path).name for path in publish["with"]["files"].splitlines()}
+    assert files == expected | {"kritrim_mulyankan-*.whl", "SHA256SUMS"}
+
+
+def test_release_verification_rejects_incomplete_downloads_and_hashes_all_assets(tmp_path):
+    expected = PACKAGING["ASSETS"] | {"kritrim_mulyankan-1.2.3-py3-none-any.whl"}
+    verify = PACKAGING["verify_release"]
+    with pytest.raises(RuntimeError, match="missing"):
+        verify(tmp_path, "1.2.3")
+    for name in expected:
+        (tmp_path / name).write_bytes(name.encode())
+    extra = tmp_path / "unexpected.exe"
+    extra.write_bytes(b"unexpected")
+    with pytest.raises(RuntimeError, match="extra"):
+        verify(tmp_path, "1.2.3")
+    extra.unlink()
+    asset = tmp_path / "km-windows-x86_64.zip"
+    asset.write_bytes(b"")
+    with pytest.raises(RuntimeError, match="Empty"):
+        verify(tmp_path, "1.2.3")
+    asset.write_bytes(asset.name.encode())
+    verify(tmp_path, "1.2.3")
+    actual = (tmp_path / "SHA256SUMS").read_text().splitlines()
+    assert actual == [
+        f"{hashlib.sha256(name.encode()).hexdigest()}  {name}" for name in sorted(expected)
+    ]
+
+
+def test_release_versions_stay_in_sync():
+    version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
+    PACKAGING["check_versions"](version)
+    npm_lock = json.loads(_read("desktop/package-lock.json"))
+    assert npm_lock["version"] == version
+    assert npm_lock["packages"][""]["version"] == version

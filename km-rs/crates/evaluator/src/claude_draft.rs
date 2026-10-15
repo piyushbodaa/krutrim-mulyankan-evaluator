@@ -263,6 +263,11 @@ impl ClaudeDraft {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("RuntimeError: could not start Claude CLI ({e})"))?;
+        // Drain both pipes while the process runs. Waiting for exit first
+        // deadlocks once a response fills the OS pipe buffer (especially on
+        // Windows, where even an ordinary JSON response can fill it).
+        let stdout_reader = read_pipe(child.stdout.take());
+        let stderr_reader = read_pipe(child.stderr.take());
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(prompt.as_bytes());
         }
@@ -292,14 +297,8 @@ impl ClaudeDraft {
             Some(s) => s,
             None => terminate_group(&mut child),
         };
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        if let Some(mut o) = child.stdout.take() {
-            let _ = o.read_to_string(&mut stdout);
-        }
-        if let Some(mut e) = child.stderr.take() {
-            let _ = e.read_to_string(&mut stderr);
-        }
+        let stdout = stdout_reader.join().unwrap_or_default();
+        let stderr = stderr_reader.join().unwrap_or_default();
         let exit_code = status.code();
         let mut raw = Map::new();
         raw.insert("stdout".into(), json!(stdout));
@@ -401,6 +400,16 @@ impl ClaudeDraft {
     }
 }
 
+fn read_pipe(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut output = String::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_string(&mut output);
+        }
+        output
+    })
+}
+
 fn terminate_group(child: &mut Child) -> std::process::ExitStatus {
     #[cfg(windows)]
     {
@@ -447,6 +456,47 @@ pub fn access_proof_path(runs_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_larger_than_pipe_buffers_does_not_block_process_exit() {
+        const CHILD: &str = "KM_TEST_LARGE_CLI_OUTPUT";
+        const BYTES: usize = 256 * 1024;
+        if std::env::var_os(CHILD).is_some() {
+            std::io::stdout().write_all(&vec![b'A'; BYTES]).unwrap();
+            std::io::stderr().write_all(&vec![b'B'; BYTES]).unwrap();
+            return;
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "claude_draft::tests::output_larger_than_pipe_buffers_does_not_block_process_exit",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = read_pipe(child.stdout.take());
+        let stderr = read_pipe(child.stderr.take());
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let completed = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status.success();
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let stdout = stdout.join().unwrap();
+        let stderr = stderr.join().unwrap();
+        assert!(completed, "CLI blocked writing output larger than its pipe buffers");
+        assert_eq!(stdout.bytes().filter(|byte| *byte == b'A').count(), BYTES);
+        assert_eq!(stderr.bytes().filter(|byte| *byte == b'B').count(), BYTES);
+    }
 
     #[cfg(windows)]
     #[test]

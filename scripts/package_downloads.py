@@ -48,10 +48,10 @@ def one(paths) -> Path:
     return found[0]
 
 
-def run(command: list[str | Path], **kwargs) -> subprocess.CompletedProcess:
+def run(command: list[str | Path] | str, **kwargs) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
-            [str(part) for part in command],
+            command if isinstance(command, str) else [str(part) for part in command],
             check=True,
             text=True,
             encoding="utf-8",
@@ -173,6 +173,7 @@ def package_cli(target: str, platform: str) -> None:
         payload.mkdir()
         shutil.copy2(ROOT / "km-rs/target" / target / "release" / name, payload / name)
         shutil.copytree(ROOT / "suites", payload / "suites")
+        shutil.copy2(ROOT / "LICENSE", payload / "LICENSE")
         if windows:
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
                 for path in sorted(payload.rglob("*")):
@@ -185,6 +186,7 @@ def package_cli(target: str, platform: str) -> None:
             with tarfile.open(archive, "w:gz") as output:
                 output.add(payload / name, arcname=name)
                 output.add(payload / "suites", arcname="suites")
+                output.add(payload / "LICENSE", arcname="LICENSE")
             with tarfile.open(archive) as output:
                 output.extractall(work / "unpacked", filter="data")
         smoke_cli(work / "unpacked" / name)
@@ -220,9 +222,11 @@ def package_desktop(target: str, platform: str) -> None:
             shutil.copy2(deb, DOWNLOADS / "Krutrim-Mulyankan-linux.deb")
         elif platform.startswith("windows"):
             installer = one((bundle / "nsis").glob("*.exe"))
-            # NSIS /D must be the final argument. Install in a disposable directory.
-            installed = work / "installed"
-            run([installer, "/S", f"/D={installed}"])
+            # NSIS consumes /D through the end of the raw command line, without
+            # quoting even when its path contains spaces. Exercise that case.
+            installed = work / "installed app"
+            command = subprocess.list2cmdline([str(installer), "/S", "/NS"])
+            run(f"{command} /D={installed}")
             smoke_engine(packaged_engine(installed))
             shutil.copy2(installer, DOWNLOADS / "Krutrim-Mulyankan-windows.exe")
         else:

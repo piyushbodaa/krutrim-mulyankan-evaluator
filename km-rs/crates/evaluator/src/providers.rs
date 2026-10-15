@@ -244,21 +244,16 @@ pub fn call_with_retries<T>(
     unreachable!()
 }
 
-fn agent(timeout_s: f64) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs_f64(timeout_s.max(0.05)))
-        .redirects(0)
-        .build()
-}
-
 fn send_json(
+    agent: &ureq::Agent,
     url: &str,
     headers: &[(&str, String)],
     body: &Map<String, Value>,
     timeout_s: f64,
 ) -> Result<Value, ApiError> {
-    let mut req = agent(timeout_s)
+    let mut req = agent
         .post(url)
+        .timeout(Duration::from_secs_f64(timeout_s.max(0.05)))
         .set("Content-Type", "application/json");
     for (k, v) in headers {
         req = req.set(k, v);
@@ -292,6 +287,9 @@ pub struct Adapter {
     cfg: ProviderConfig,
     api_key: Option<String>,
     env: BTreeMap<String, String>,
+    // Keep connections/TLS sessions across tasks for this provider. Each
+    // request still applies the task's own deadline and credentials.
+    agent: ureq::Agent,
 }
 
 pub fn make_adapter(
@@ -310,6 +308,7 @@ pub fn make_adapter(
         cfg,
         api_key: key,
         env: env.clone(),
+        agent: ureq::AgentBuilder::new().redirects(0).build(),
     }
 }
 
@@ -395,7 +394,7 @@ impl Adapter {
             headers.push(("Authorization", format!("Bearer {token}")));
         }
         let url = format!("{}/v1/messages", self.base_url().unwrap_or_default());
-        let body = send_json(&url, &headers, &request, timeout_s)?;
+        let body = send_json(&self.agent, &url, &headers, &request, timeout_s)?;
         let message = obj(&body);
         let text: String = message
             .get("content")
@@ -473,6 +472,7 @@ impl Adapter {
             .unwrap_or_default();
         let url = format!("{}/chat/completions", self.base_url().unwrap_or_default());
         let body = send_json(
+            &self.agent,
             &url,
             &[("Authorization", format!("Bearer {key}"))],
             &request,
