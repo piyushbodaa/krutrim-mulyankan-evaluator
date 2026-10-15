@@ -56,6 +56,37 @@ def package_cli(platform):
                     archive.add(file, arcname=file.name)
 
 
+def verify_macos_dmg(dmg):
+    # Tauri removes its intermediate .app for DMG-only builds. Inspect the
+    # distributed image itself, mounted read-only, rather than that scratch tree.
+    with tempfile.TemporaryDirectory() as temp:
+        mount = Path(temp) / "mounted"
+        mount.mkdir()
+        checked(
+            ["hdiutil", "attach", str(dmg), "-nobrowse", "-readonly", "-mountpoint", str(mount)]
+        )
+        try:
+            apps = list(mount.glob("*.app"))
+            assert len(apps) == 1, apps
+            checked(["codesign", "--verify", "--deep", "--strict", str(apps[0])])
+            resources = apps[0] / "Contents/Resources/engine"
+            engine = resources / "km-desktop"
+            assert engine.is_file(), engine
+            assert (resources / "preview/index.html").is_file()
+            assert (resources / "suites/example.yaml").is_file()
+            assert (resources / "desktop/ui/dashboard-shim.js").is_file()
+            response = checked(
+                [str(engine)], input='{"id":"ci","method":"ping","params":{}}\n', cwd=temp
+            )
+            assert any(
+                json.loads(line).get("ok") is True
+                for line in response.stdout.splitlines()
+                if line.strip()
+            ), response.stdout
+        finally:
+            checked(["hdiutil", "detach", str(mount)])
+
+
 def collect_installers(platform):
     bundle = ROOT / "desktop" / "src-tauri" / "target" / "release" / "bundle"
     output = ROOT / "dist" / "native"
@@ -67,12 +98,6 @@ def collect_installers(platform):
         ]
     elif platform.startswith("macos"):
         pairs = [("dmg/*.dmg", f"Krutrim-Mulyankan-{platform}.dmg")]
-        apps = list((bundle / "macos").glob("*.app"))
-        assert len(apps) == 1, apps
-        checked(["codesign", "--verify", "--deep", "--strict", str(apps[0])])
-        packaged_engine = apps[0] / "Contents/Resources/engine/km-desktop"
-        assert packaged_engine.is_file(), packaged_engine
-        checked([str(packaged_engine)], input='{"id":"ci","method":"ping","params":{}}\n')
     else:
         pairs = [
             ("appimage/*.AppImage", "Krutrim-Mulyankan-linux.AppImage"),
@@ -82,6 +107,8 @@ def collect_installers(platform):
         matches = list(bundle.glob(pattern))
         assert len(matches) == 1, (pattern, matches)
         assert matches[0].stat().st_size > 0
+        if platform.startswith("macos"):
+            verify_macos_dmg(matches[0])
         shutil.copy2(matches[0], output / name)
 
 
