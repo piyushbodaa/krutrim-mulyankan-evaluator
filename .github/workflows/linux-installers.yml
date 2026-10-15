@@ -33,8 +33,13 @@ jobs:
   setup-and-rpm:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    outputs:
+      source_date_epoch: ${{ steps.source.outputs.epoch }}
     steps:
       - uses: actions/checkout@v4
+      - name: Record the source packaging timestamp
+        id: source
+        run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -90,6 +95,8 @@ jobs:
     runs-on: ubuntu-22.04
     container: archlinux:base-devel
     timeout-minutes: 15
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.setup-and-rpm.outputs.source_date_epoch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
