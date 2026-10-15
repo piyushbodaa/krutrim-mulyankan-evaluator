@@ -18,6 +18,7 @@ pub mod runners;
 pub mod settings;
 pub mod store;
 pub mod suite;
+pub mod tokens;
 pub mod verdicts;
 pub mod workbench;
 
