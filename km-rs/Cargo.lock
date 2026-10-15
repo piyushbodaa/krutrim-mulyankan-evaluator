@@ -708,6 +708,7 @@ name = "krutrim-evaluator"
 version = "0.2.1"
 dependencies = [
  "chrono",
+ "getrandom 0.2.17",
  "libc",
  "regex",
  "rusqlite",
