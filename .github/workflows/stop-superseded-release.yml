@@ -1,0 +1,19 @@
+name: Stop the superseded v0.3.0 release
+on:
+  pull_request:
+permissions:
+  actions: write
+  contents: read
+jobs:
+  cancel:
+    if: github.head_ref == 'codex/macos-local-dashboard'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Stop only the known superseded release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          head="$(gh api "repos/$GH_REPO/actions/runs/38692367387" --jq '.head_sha')"
+          test "$head" = "f0c74ec6c5c558a296651a1700876ac96dccfff6"
+          gh api --method POST "repos/$GH_REPO/actions/runs/38692367387/cancel"
