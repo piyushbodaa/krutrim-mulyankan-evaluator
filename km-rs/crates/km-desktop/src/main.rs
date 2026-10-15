@@ -179,17 +179,9 @@ fn ui_dir(root: &Path) -> PathBuf {
 
 fn token_urlsafe() -> String {
     let mut bytes = [0u8; 24];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut bytes);
-    } else {
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        for (i, b) in bytes.iter_mut().enumerate() {
-            *b = ((t >> (i % 16 * 4)) & 0xff) as u8 ^ (i as u8).wrapping_mul(37);
-        }
-    }
+    // The loopback server token is a credential. Use each platform's OS RNG,
+    // including Windows BCryptGenRandom, and fail closed if entropy is unavailable.
+    getrandom::getrandom(&mut bytes).expect("OS randomness unavailable; refusing to start server");
     const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
@@ -1546,5 +1538,24 @@ fn main() {
     // stdin closed: let an in-flight run finish writing its reply first.
     for handle in run_threads {
         let _ = handle.join();
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::token_urlsafe;
+    use std::collections::HashSet;
+
+    #[test]
+    fn tokens_use_full_length_urlsafe_os_randomness() {
+        let mut seen = HashSet::new();
+        for _ in 0..128 {
+            let token = token_urlsafe();
+            assert_eq!(token.len(), 32);
+            assert!(token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+            assert!(seen.insert(token));
+        }
     }
 }

@@ -18,6 +18,8 @@ unicode-normalization = "0.1"
 rust_decimal = "1"
 ureq = { version = "2", features = ["json"] }
 
+getrandom = "0.2"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

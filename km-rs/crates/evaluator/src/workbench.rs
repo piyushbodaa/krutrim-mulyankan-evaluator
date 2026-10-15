@@ -2346,21 +2346,29 @@ fn handle_post(bench: &Workbench, request: &HttpRequest, port: u16, token: &str)
     }
 }
 
-fn random_token() -> String {
-    let material = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
-    sha256_hex(material.as_bytes())
+fn random_token() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| format!("OS randomness unavailable; refusing to start server: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+#[cfg(test)]
+mod token_tests {
+    #[test]
+    fn workbench_tokens_are_full_length_and_distinct() {
+        let first = super::random_token().expect("OS RNG");
+        let second = super::random_token().expect("OS RNG");
+        assert!(super::hex64(&first));
+        assert!(super::hex64(&second));
+        assert_ne!(first, second);
+    }
 }
 
 /// Serve the workbench forever; mirrors `local_ui.serve`.
 pub fn serve_workbench(project: &Path, port: u16) -> Result<(), String> {
     let bench = create_workbench(project)?;
+    let token = random_token()?;
     let listener = TcpListener::bind(("127.0.0.1", port))
         .map_err(|e| format!("cannot start workbench: {e}"))?;
     let bound = listener
@@ -2369,7 +2377,6 @@ pub fn serve_workbench(project: &Path, port: u16) -> Result<(), String> {
         .unwrap_or(port);
     println!("Krutrim Mulyankan evaluator: http://127.0.0.1:{bound}/");
     println!("Recorded app evidence, mock controls and verified CLI drafts. Paid APIs disabled.");
-    let token = random_token();
     serve_on(bench, listener, &token, bound)
 }
 
