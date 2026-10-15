@@ -9,6 +9,7 @@ on:
     tags:
       - "v*"
     paths:
+      - .github/workflows/release.yml
       - pyproject.toml
       - km-rs/Cargo.toml
       - desktop/package.json
@@ -74,7 +75,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          uv build --locked --wheel
+          uv build --wheel
           test -f "dist/kritrim_mulyankan-${RELEASE_VERSION}-py3-none-any.whl"
       - uses: actions/upload-artifact@v4
         with:
