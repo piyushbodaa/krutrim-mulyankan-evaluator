@@ -90,3 +90,12 @@ def test_native_matrix_and_release_assets_agree():
     assert "python scripts/package_native.py" in desktop
     assert "SHA256SUMS.txt" in release
     assert "not notarized" in release
+
+
+def test_release_versions_stay_in_sync():
+    version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
+    assert tomllib.loads(_read("km-rs/Cargo.toml"))["workspace"]["package"]["version"] == version
+    assert tomllib.loads(_read("desktop/src-tauri/Cargo.toml"))["package"]["version"] == version
+    assert json.loads(_read("desktop/package.json"))["version"] == version
+    assert json.loads(_read("desktop/package-lock.json"))["version"] == version
+    assert json.loads(_read("desktop/src-tauri/tauri.conf.json"))["version"] == version
