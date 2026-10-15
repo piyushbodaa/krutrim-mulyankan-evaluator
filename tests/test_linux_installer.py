@@ -4,11 +4,14 @@ import os
 import runpy
 import shutil
 import subprocess
+import sys
 import tarfile
 import time
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux graphical installer")
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = runpy.run_path(str(ROOT / "desktop/linux-installer/build.py"))

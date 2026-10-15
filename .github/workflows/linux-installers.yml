@@ -44,12 +44,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libgtk-3-dev \
             libwebkit2gtk-4.1-0 libarchive-tools desktop-file-utils rpm \
-            xvfb imagemagick
+            xvfb xdotool imagemagick
       - name: Test installer behavior and release-input verification
         run: |
           uv sync --locked --group dev
-          uv run ruff check desktop/linux-installer scripts/fetch_linux_release.py tests/test_linux_installer.py tests/test_fetch_linux_release.py
-          uv run ruff format --check desktop/linux-installer tests/test_linux_installer.py scripts/fetch_linux_release.py tests/test_fetch_linux_release.py
+          uv run ruff check desktop/linux-installer scripts/fetch_linux_release.py tests/test_linux_installer.py tests/test_fetch_linux_release.py tests/smoke_linux_setup.py
+          uv run ruff format --check desktop/linux-installer tests/test_linux_installer.py scripts/fetch_linux_release.py tests/test_fetch_linux_release.py tests/smoke_linux_setup.py
           mkdir -p dist/inspection
           KM_TEST_GUI=1 KM_SETUP_SCREENSHOT="$PWD/dist/inspection/linux-setup.png" xvfb-run -a \
             uv run pytest tests/test_linux_installer.py tests/test_fetch_linux_release.py tests/test_desktop_packaging.py
@@ -63,6 +63,11 @@ jobs:
             --output dist/downloads/Krutrim-Mulyankan-linux-setup.tar.gz
           python scripts/package_downloads.py package-rpm-from-deb --deb inputs/Krutrim-Mulyankan-linux.deb
           cp inputs/release-inputs.json dist/downloads/linux-installer-source.json
+      - name: Install and open the real app, reopen from its menu entry, and remove
+        run: |
+          xvfb-run -a python tests/smoke_linux_setup.py \
+            --archive dist/downloads/Krutrim-Mulyankan-linux-setup.tar.gz \
+            --screenshots dist/inspection
       - uses: actions/upload-artifact@v4
         with:
           name: linux-setup-and-rpm
