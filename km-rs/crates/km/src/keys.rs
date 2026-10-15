@@ -1,5 +1,6 @@
 //! API keys managed by the interactive menu. Stored in
-//! `$XDG_CONFIG_HOME/krutrim-mulyankan/keys.env` (default `~/.config/...`),
+//! `$XDG_CONFIG_HOME/krutrim-mulyankan/keys.env` (default `~/.config/...`
+//! on Linux/macOS, `%APPDATA%/krutrim-mulyankan/keys.env` on Windows),
 //! one `NAME=value` per line, file mode 0600 on Unix. Real environment
 //! variables and a project `.env` always win; this file only fills gaps.
 //! The Python km does not read this file; keys saved here apply to the
@@ -24,13 +25,33 @@ pub const PROVIDER_KEYS: [(&str, &str, bool); 7] = [
 ];
 
 pub fn keys_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("KM_KEYS_FILE") {
+    keys_path_from(|name| std::env::var_os(name), cfg!(windows))
+}
+
+fn keys_path_from(env: impl Fn(&str) -> Option<std::ffi::OsString>, windows: bool) -> PathBuf {
+    if let Some(path) = env("KM_KEYS_FILE") {
         return PathBuf::from(path);
     }
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    let base = env("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+        .or_else(|| {
+            if windows {
+                env("APPDATA")
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        env("USERPROFILE")
+                            .filter(|value| !value.is_empty())
+                            .map(|home| PathBuf::from(home).join("AppData").join("Roaming"))
+                    })
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| {
-            std::env::var_os("HOME")
+            env("HOME")
+                .filter(|value| !value.is_empty())
                 .map(|home| PathBuf::from(home).join(".config"))
                 .unwrap_or_else(|| PathBuf::from(".config"))
         });
@@ -400,6 +421,57 @@ pub fn key_source(name: &str, _file_entries: &BTreeMap<String, String>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn path_for(values: &[(&str, &str)], windows: bool) -> PathBuf {
+        keys_path_from(
+            |name| {
+                values
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).into())
+            },
+            windows,
+        )
+    }
+
+    #[test]
+    fn windows_keys_use_the_user_profile_without_a_unix_home() {
+        assert_eq!(
+            path_for(&[("APPDATA", "profile/roaming")], true),
+            PathBuf::from("profile/roaming/krutrim-mulyankan/keys.env")
+        );
+        assert_eq!(
+            path_for(&[("APPDATA", ""), ("USERPROFILE", "profile")], true),
+            PathBuf::from("profile/AppData/Roaming/krutrim-mulyankan/keys.env")
+        );
+    }
+
+    #[test]
+    fn key_file_overrides_and_unix_locations_are_preserved() {
+        for windows in [false, true] {
+            assert_eq!(
+                path_for(
+                    &[
+                        ("KM_KEYS_FILE", "custom.env"),
+                        ("XDG_CONFIG_HOME", "config")
+                    ],
+                    windows
+                ),
+                PathBuf::from("custom.env")
+            );
+            assert_eq!(
+                path_for(
+                    &[("XDG_CONFIG_HOME", "config"), ("APPDATA", "roaming")],
+                    windows
+                ),
+                PathBuf::from("config/krutrim-mulyankan/keys.env")
+            );
+        }
+        assert_eq!(
+            path_for(&[("HOME", "home"), ("APPDATA", "roaming")], false),
+            PathBuf::from("home/.config/krutrim-mulyankan/keys.env")
+        );
+    }
 
     #[derive(Default)]
     struct FakeEnvironment(BTreeMap<String, OsString>);

@@ -2346,20 +2346,9 @@ fn handle_post(bench: &Workbench, request: &HttpRequest, port: u16, token: &str)
     }
 }
 
-fn random_token() -> String {
-    let material = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    );
-    sha256_hex(material.as_bytes())
-}
-
 /// Serve the workbench forever; mirrors `local_ui.serve`.
 pub fn serve_workbench(project: &Path, port: u16) -> Result<(), String> {
+    let token = crate::tokens::random_token()?;
     let bench = create_workbench(project)?;
     let listener = TcpListener::bind(("127.0.0.1", port))
         .map_err(|e| format!("cannot start workbench: {e}"))?;
@@ -2369,7 +2358,6 @@ pub fn serve_workbench(project: &Path, port: u16) -> Result<(), String> {
         .unwrap_or(port);
     println!("Krutrim Mulyankan evaluator: http://127.0.0.1:{bound}/");
     println!("Recorded app evidence, mock controls and verified CLI drafts. Paid APIs disabled.");
-    let token = random_token();
     serve_on(bench, listener, &token, bound)
 }
 

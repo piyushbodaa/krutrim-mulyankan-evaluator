@@ -28,19 +28,18 @@ Models with no checked price in the bundled price table stay disabled. A paid ru
 
 ## Run it locally (development)
 
-You need Python 3.12, Node, Rust, and the Tauri system libraries. People who install a built app do not need these.
+You need Node, Rust, the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/), and Python for the development web server. People who install a built app do not need these build tools.
 
 ```sh
-uv sync
+cargo build --locked --manifest-path km-rs/Cargo.toml -p km-desktop-engine
 cd desktop
-npm install
-# Point at the project virtualenv so the window can start the engine.
-KM_PYTHON="$(cd .. && pwd)/.venv/bin/python" npm run dev
+npm ci
+npm run dev
 ```
 
-On Windows, set `KM_PYTHON` to `..\.venv\Scripts\python.exe` in PowerShell before `npm run dev`.
+The shell finds the native engine in `km-rs/target/debug/` or `release/`, including `km-desktop.exe` on Windows. For Python-engine comparison only, run `uv sync` and set `KM_PYTHON` to the absolute virtualenv Python path before starting the app.
 
-`npm run dev` opens the window. It serves the screens from `ui/` and starts `python -m kritrim_mulyankan.desktop_bridge`. Results are loaded from `preview/` in an iframe. That folder is not modified; a script tag is inserted only in the served copy, so design work on `preview/` still applies.
+`npm run dev` opens the window. It serves the screens from `ui/` and starts the Rust `km-desktop` engine. Results are loaded from `preview/` in an iframe. That folder is not modified; a script tag is inserted only in the served copy, so design work on `preview/` still applies.
 
 A loopback page, useful for screenshots and for clicking through without Rust:
 
@@ -72,23 +71,69 @@ chmod +x Krutrim-Mulyankan_*.AppImage
 
 If AppImage reports that FUSE is missing, unpack the `.tar.gz` and run `AppRun` in that folder, or start the AppImage with `--appimage-extract-and-run`. The window turns off WebKit's DMA-BUF renderer unless you have already set `WEBKIT_DISABLE_DMABUF_RENDERER`. On Hyprland it also turns off compositing mode so the window is not blank. Keys use the Secret Service (gnome-keyring or equivalent). If that service is locked, the window still opens and practice checks still run.
 
-## GitHub Releases
+## Native builds and GitHub Releases
 
-Pushing a tag `v` plus the version in `pyproject.toml` (for example `v0.1.0`) runs `.github/workflows/release.yml`. It does not create the tag. The release assets, which the site can link as `/releases/latest/download/<file>`, are:
+`.github/workflows/build-downloads.yml` is shared by desktop CI and releases.
+It builds on Ubuntu 22.04 (x86-64), Windows Server 2022 (x86-64), macOS 15
+(Apple Silicon), and macOS 15 Intel. Each runner builds its own CLI, Rust engine,
+and Tauri shell. No Python/PyInstaller engine is bundled. Windows binaries statically link the
+Visual C++ runtime, so the CLI and engine need no separate VC redistributable.
+
+Pull requests, pushes to `main`, and manual runs of **Desktop installers** upload
+artifacts for review. Separately, merging synchronized package version changes to
+`main` starts **Release**. It skips an already-tagged version; for a new version,
+it runs all native builds and Python checks, then creates `v<version>` at that
+exact tested commit and publishes the complete download set. An explicit matching
+`v<version>` tag remains another way to start the same release flow.
+
+Publication is serialized by version and rechecks the remote tag immediately
+before publishing. Existing tags are never moved, including when retrying a failed
+publish job. Availability means the files appear in a completed GitHub Release;
+configuring a platform does not itself make it released.
 
 | File | What it is |
 |---|---|
-| `Krutrim-Mulyankan-linux.AppImage` | Desktop app for Linux, including Arch and Omarchy. |
-| `Krutrim-Mulyankan-windows.exe` | Desktop app installer for Windows. |
-| `Krutrim-Mulyankan-mac.dmg` | Desktop app disk image from the macOS runner. |
-| `kritrim_mulyankan-<version>-py3-none-any.whl` | The `km` package for `pip`. |
-| `km-linux-x86_64.tar.gz` | Single-file `km` with `suites/` beside it and packed inside. |
+| `Krutrim-Mulyankan-linux.AppImage` | Linux x86-64 desktop app. |
+| `Krutrim-Mulyankan-linux.deb` | Debian/Ubuntu x86-64 desktop package. |
+| `km-desktop-linux.tar.gz` | Extracted Linux app for systems without FUSE. |
+| `Krutrim-Mulyankan-windows.exe` | Windows x86-64 NSIS installer. |
+| `Krutrim-Mulyankan-mac-arm64.dmg` | Apple Silicon Mac app disk image. |
+| `Krutrim-Mulyankan-mac-x86_64.dmg` | Intel Mac app disk image. |
+| `km-linux-x86_64.tar.gz` | Linux x86-64 static CLI. |
+| `km-windows-x86_64.zip` | Windows x86-64 CLI (`km.exe`). |
+| `km-macos-aarch64.tar.gz` | Apple Silicon Mac CLI. |
+| `km-macos-x86_64.tar.gz` | Intel Mac CLI. |
+| `kritrim_mulyankan-<version>-py3-none-any.whl` | Python CLI package for `pip`. |
+| `SHA256SUMS` | SHA-256 hashes for release files. |
 
-## Installers
+For Windows, run the `.exe` installer. For macOS, open the disk image and drag the
+app into Applications. Choose Apple Silicon for M-series Macs; choose Intel for
+Intel Macs. Windows builds have no Authenticode certificate; macOS builds have an
+ad-hoc signature and are not notarized. See [SIGNING.md](SIGNING.md).
 
-`.github/workflows/desktop.yml` builds an unsigned installer on Linux, Windows, and macOS. Each job bundles a PyInstaller engine (`desktop/sidecar/entry.py`) and runs `tauri build`. Artifacts are named `km-desktop-Linux`, `km-desktop-Windows`, and `km-desktop-macOS`.
+The engine is an executable with stdin/stdout pipes. Windows uses
+`CREATE_NO_WINDOW` for the engine so opening the desktop app does not open a
+console window. Keys use macOS Keychain, Windows Credential Manager, or Linux
+Secret Service. Windows CLI keys use the user's application-data directory.
 
-The release binary is a normal executable with stdin/stdout pipes. On Windows the window starts it with `CREATE_NO_WINDOW`, so no console appears. Build the sidecar as a console program; a windowed PyInstaller build would drop those pipes.
+Each native job runs Rust tests, extracts and exercises the CLI archive, checks the
+engine's JSON-lines protocol, and verifies the engine and resources inside the
+built desktop package. These checks do not replace an interactive check of the
+window, system keychain, and installer prompts on a real machine.
+
+## Build an installer on your own platform
+
+From the repository root, build and stage the engine before building the shell:
+
+```sh
+cargo build --release --locked --manifest-path km-rs/Cargo.toml -p km-desktop-engine
+```
+
+Follow the staging and bundling commands in `.github/workflows/build-downloads.yml`;
+they copy the engine, suites, dashboard, and bridge resources before `npm ci` and
+`npm run build`. Use `--bundles nsis` on Windows, `--bundles dmg` on macOS, or
+`--bundles appimage,deb` on Linux. Build each Mac architecture on its matching
+runner so the shell and engine always match.
 
 ## Language and appearance
 

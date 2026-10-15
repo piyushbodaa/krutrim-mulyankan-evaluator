@@ -29,16 +29,61 @@ const ALLOWED_ENV: &[&str] = &[
     "XDG_DATA_HOME",
 ];
 
+const WINDOWS_ENV: &[&str] = &[
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "TEMP",
+    "TMP",
+    "USERNAME",
+];
+
+fn allowed_env(name: &str, windows: bool) -> bool {
+    if windows {
+        ALLOWED_ENV
+            .iter()
+            .chain(WINDOWS_ENV)
+            .any(|key| key.eq_ignore_ascii_case(name))
+    } else {
+        ALLOWED_ENV.contains(&name)
+    }
+}
+
 pub fn cli_environment() -> BTreeMap<String, String> {
     std::env::vars()
-        .filter(|(k, _)| ALLOWED_ENV.contains(&k.as_str()))
+        .filter(|(k, _)| allowed_env(k, cfg!(windows)))
         .collect()
 }
 
 fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join(name))
+    find_executable(name, std::env::split_paths(&path), cfg!(windows))
+}
+
+fn find_executable(
+    name: &str,
+    paths: impl Iterator<Item = PathBuf>,
+    windows: bool,
+) -> Option<PathBuf> {
+    // npm also installs an extensionless POSIX shim on Windows. Prefer
+    // native executables, then Windows batch shims; never select that shim.
+    let extensions: &[&str] = if windows {
+        &[".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+    paths
+        .flat_map(|dir| {
+            extensions
+                .iter()
+                .map(move |extension| dir.join(format!("{name}{extension}")))
+        })
         .find(|p| p.is_file())
 }
 
@@ -218,6 +263,11 @@ impl ClaudeDraft {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("RuntimeError: could not start Claude CLI ({e})"))?;
+        // Drain both pipes while the process runs. Waiting for exit first
+        // deadlocks once a response fills the OS pipe buffer (especially on
+        // Windows, where even an ordinary JSON response can fill it).
+        let stdout_reader = read_pipe(child.stdout.take());
+        let stderr_reader = read_pipe(child.stderr.take());
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(prompt.as_bytes());
         }
@@ -247,14 +297,8 @@ impl ClaudeDraft {
             Some(s) => s,
             None => terminate_group(&mut child),
         };
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        if let Some(mut o) = child.stdout.take() {
-            let _ = o.read_to_string(&mut stdout);
-        }
-        if let Some(mut e) = child.stderr.take() {
-            let _ = e.read_to_string(&mut stderr);
-        }
+        let stdout = stdout_reader.join().unwrap_or_default();
+        let stderr = stderr_reader.join().unwrap_or_default();
         let exit_code = status.code();
         let mut raw = Map::new();
         raw.insert("stdout".into(), json!(stdout));
@@ -356,7 +400,34 @@ impl ClaudeDraft {
     }
 }
 
+fn read_pipe(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut output = String::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_string(&mut output);
+        }
+        output
+    })
+}
+
 fn terminate_group(child: &mut Child) -> std::process::ExitStatus {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // A .cmd shim launches another process. Stopping only cmd.exe can
+        // leave that process running (and holding the stdout pipe open).
+        let taskkill = std::env::var_os("SystemRoot")
+            .map(|root| PathBuf::from(root).join("System32").join("taskkill.exe"))
+            .unwrap_or_else(|| PathBuf::from("taskkill.exe"));
+        let _ = Command::new(taskkill)
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .creation_flags(0x0800_0000)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = child.kill();
+    }
     #[cfg(unix)]
     unsafe {
         libc::killpg(child.id() as i32, libc::SIGTERM);
@@ -380,4 +451,103 @@ fn terminate_group(child: &mut Child) -> std::process::ExitStatus {
 
 pub fn access_proof_path(runs_dir: &Path) -> PathBuf {
     runs_dir.join("automation-access.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_larger_than_pipe_buffers_does_not_block_process_exit() {
+        const CHILD: &str = "KM_TEST_LARGE_CLI_OUTPUT";
+        const BYTES: usize = 256 * 1024;
+        if std::env::var_os(CHILD).is_some() {
+            std::io::stdout().write_all(&vec![b'A'; BYTES]).unwrap();
+            std::io::stderr().write_all(&vec![b'B'; BYTES]).unwrap();
+            return;
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "claude_draft::tests::output_larger_than_pipe_buffers_does_not_block_process_exit",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = read_pipe(child.stdout.take());
+        let stderr = read_pipe(child.stderr.take());
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let completed = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status.success();
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let stdout = stdout.join().unwrap();
+        let stderr = stderr.join().unwrap();
+        assert!(completed, "CLI blocked writing output larger than its pipe buffers");
+        assert_eq!(stdout.bytes().filter(|byte| *byte == b'A').count(), BYTES);
+        assert_eq!(stderr.bytes().filter(|byte| *byte == b'B').count(), BYTES);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_cli_starts_with_filtered_environment_and_a_spaced_path() {
+        let dir = std::env::temp_dir().join(format!("km cli batch {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("claude.cmd");
+        std::fs::write(&path, "@echo off\r\necho test-cli-1.0\r\n").unwrap();
+        assert_eq!(cli_version(&path).as_deref(), Some("test-cli-1.0"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn windows_environment_keeps_runtime_paths_but_excludes_credentials() {
+        for name in [
+            "Path",
+            "SystemRoot",
+            "ComSpec",
+            "APPDATA",
+            "USERPROFILE",
+            "TEMP",
+        ] {
+            assert!(allowed_env(name, true), "{name}");
+        }
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "OPENAI_API_KEY",
+            "OTHER_SECRET",
+        ] {
+            assert!(!allowed_env(name, true), "{name}");
+            assert!(!allowed_env(name, false), "{name}");
+        }
+        assert!(allowed_env("PATH", false));
+        assert!(!allowed_env("Path", false));
+    }
+
+    #[test]
+    fn windows_finds_native_and_npm_cli_without_selecting_posix_shim() {
+        let dir = std::env::temp_dir().join(format!("km-cli-resolution-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["claude", "claude.cmd", "claude.exe"] {
+            std::fs::write(dir.join(name), "test fixture").unwrap();
+        }
+        let lookup = |windows| find_executable("claude", std::iter::once(dir.clone()), windows);
+        assert_eq!(lookup(false), Some(dir.join("claude")));
+        assert_eq!(lookup(true), Some(dir.join("claude.exe")));
+        std::fs::remove_file(dir.join("claude.exe")).unwrap();
+        assert_eq!(lookup(true), Some(dir.join("claude.cmd")));
+        std::fs::remove_file(dir.join("claude.cmd")).unwrap();
+        assert_eq!(lookup(true), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

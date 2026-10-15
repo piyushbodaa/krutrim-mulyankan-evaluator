@@ -57,7 +57,7 @@ fn start_mock(responses: Vec<(u16, Vec<(String, String)>, String)>) -> Mock {
                 q.first().cloned().unwrap()
             };
             let mut head = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n",
                 text.len()
             );
             for (k, v) in extra {
@@ -405,4 +405,107 @@ fn missing_key_is_a_problem_and_bad_specs_error() {
         named.name,
         "model:anthropic/claude-opus-5-5,effort=high,max_tokens=900"
     );
+}
+
+#[test]
+fn runner_reuses_connection_and_does_not_replay_a_failed_post() {
+    use krutrim_evaluator::runners::RunnerInner;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        for attempt in 0..3 {
+            let mut first = String::new();
+            assert!(reader.read_line(&mut first).unwrap() > 0, "connection was not reused");
+            assert!(first.starts_with("POST "));
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                assert!(reader.read_line(&mut header).unwrap() > 0);
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            assert!(length > 0);
+            if attempt == 1 {
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["max_completion_tokens"], 13);
+                assert_eq!(body["temperature"], 0.2);
+            }
+            if attempt < 2 {
+                let (_, _, response) = chat_completion("pooled", 10, 2, 0);
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", response.len(), response).unwrap();
+                stream.flush().unwrap();
+            }
+        }
+        // The third request was received, but its response was lost. Reusing
+        // connections must never turn that into another billable POST.
+        drop(reader);
+        drop(stream);
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                other => panic!("unexpected connection after lost POST response: {other:?}"),
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    let mut runner = make_runner("model:openai/gpt-test,retries=2", &prices(), &env_for("openai", &base)).unwrap();
+    let context = RunContext { timeout_s: 2.0, ..ctx() };
+    let first = runner.run(&task(), "hello", &context);
+    assert_eq!(first.output, "pooled");
+    assert!((first.usage.cost_usd.unwrap() - 0.000018).abs() < 1e-12);
+    if let RunnerInner::Model(state) = &mut runner.inner {
+        state.options.max_tokens = Some(13);
+        state.options.temperature = Some(0.2);
+        state.price.as_mut().unwrap().input = 2.0;
+        state.sleep = Box::new(|_| panic!("A failed POST response must not be retried"));
+    }
+    let second = runner.run(&task(), "hello again", &context);
+    assert_eq!(second.output, "pooled");
+    assert!((second.usage.cost_usd.unwrap() - 0.000028).abs() < 1e-12);
+    let failed = runner.run(&task(), "lost response", &context);
+    assert!(failed.error.unwrap_or_default().contains("APIConnectionError"));
+    assert_eq!(failed.usage.cost_usd, None);
+    server.join().unwrap();
+}
+
+#[test]
+fn runner_refreshes_adapter_when_credentials_or_endpoint_change() {
+    use krutrim_evaluator::runners::RunnerInner;
+
+    let first = start_mock(vec![chat_completion("first endpoint", 10, 2, 0)]);
+    let second = start_mock(vec![chat_completion("second endpoint", 10, 2, 0)]);
+    let mut env = env_for("openai", &first.base);
+    let mut runner = make_runner("model:openai/gpt-test", &prices(), &env).unwrap();
+    assert_eq!(runner.run(&task(), "first", &ctx()).output, "first endpoint");
+
+    // The runner uses its captured environment until it is explicitly changed
+    // (desktop creates new runners from the next run's current key snapshot).
+    env.insert("OPENAI_API_KEY".into(), "outside-snapshot".into());
+    assert_eq!(runner.run(&task(), "snapshot", &ctx()).output, "first endpoint");
+    if let RunnerInner::Model(state) = &mut runner.inner {
+        state.env.insert("OPENAI_API_KEY".into(), "rotated-key".into());
+        state.env.insert("KM_OPENAI_BASE_URL".into(), second.base.clone());
+    }
+    assert_eq!(runner.run(&task(), "changed", &ctx()).output, "second endpoint");
+    for (_, headers, _) in first.requests.lock().unwrap().iter() {
+        assert!(headers.iter().any(|(name, value)| name == "authorization" && value == "Bearer test-key"));
+    }
+    let captured = second.requests.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert!(captured[0].1.iter().any(|(name, value)| name == "authorization" && value == "Bearer rotated-key"));
 }

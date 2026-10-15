@@ -177,30 +177,6 @@ fn ui_dir(root: &Path) -> PathBuf {
     root.join("desktop").join("ui")
 }
 
-fn token_urlsafe() -> String {
-    let mut bytes = [0u8; 24];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut bytes);
-    } else {
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        for (i, b) in bytes.iter_mut().enumerate() {
-            *b = ((t >> (i % 16 * 4)) & 0xff) as u8 ^ (i as u8).wrapping_mul(37);
-        }
-    }
-    const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let n = chunk.iter().fold(0u32, |a, b| (a << 8) | *b as u32) << (8 * (3 - chunk.len()));
-        for shift in [18, 12, 6, 0].into_iter().take(chunk.len() + 1) {
-            out.push(ALPHA[((n >> shift) & 63) as usize] as char);
-        }
-    }
-    out
-}
-
 struct Session {
     settings: Settings,
     env: Mutex<BTreeMap<String, String>>,
@@ -215,7 +191,7 @@ struct Session {
 }
 
 impl Session {
-    fn new() -> Session {
+    fn new() -> Result<Session, String> {
         let env: BTreeMap<String, String> = std::env::vars().collect();
         let root = resource_root();
         let runs = PathBuf::from(
@@ -246,18 +222,18 @@ impl Session {
                 .unwrap_or(88.0),
             runs_dir: runs,
         };
-        Session {
+        Ok(Session {
             preview_dir: root.join("preview"),
             settings,
             env: Mutex::new(env),
             root,
             cancel: Arc::new(AtomicBool::new(false)),
             busy: Arc::new(Mutex::new(false)),
-            token: token_urlsafe(),
+            token: tokens::random_token()?,
             http_port: Mutex::new(None),
             external_base: Mutex::new(None),
             names: Mutex::new(BTreeMap::new()),
-        }
+        })
     }
 
     fn env_snapshot(&self) -> BTreeMap<String, String> {
@@ -1499,9 +1475,15 @@ fn dispatch(session: &Arc<Session>, request: &Value, emit: &Emit) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let session = match Session::new() {
+        Ok(session) => Arc::new(session),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
     if args.first().map(|s| s.as_str()) == Some("--http") {
         let port: u16 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
-        let session = Arc::new(Session::new());
         if let Some(bound) = serve_async(session.clone(), port, true) {
             *session.external_base.lock().unwrap() = Some(format!("http://127.0.0.1:{bound}"));
             eprintln!("Krutrim Mulyankan desktop http://127.0.0.1:{bound}/");
@@ -1511,7 +1493,6 @@ fn main() {
         }
         return;
     }
-    let session = Arc::new(Session::new());
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
     let emit: Emit = Arc::new(move |msg: Value| {
         let line = serde_json::to_string(&msg).unwrap_or_default() + "\n";
