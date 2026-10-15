@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "km-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "crossterm",
@@ -696,15 +696,16 @@ dependencies = [
 
 [[package]]
 name = "km-desktop-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "krutrim-evaluator",
+ "regex",
  "serde_json",
 ]
 
 [[package]]
 name = "krutrim-evaluator"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "getrandom 0.2.17",

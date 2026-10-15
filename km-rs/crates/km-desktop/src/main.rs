@@ -275,7 +275,63 @@ impl Session {
                 s.name.clone(),
             )
         });
+        // Tests people write in the app. A broken or hand-placed file is
+        // skipped rather than hiding the ready-made packs, and it can never
+        // shadow a ready-made pack's name.
+        let builtin: std::collections::HashSet<String> =
+            suites.iter().map(|s| s.name.clone()).collect();
+        let mut mine: Vec<(std::time::SystemTime, Suite)> = Vec::new();
+        for p in discover_suites(&self.my_tests_dir()) {
+            let Ok(suite) = load_suite(&p) else { continue };
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if !suite.name.starts_with(MY_TEST_PREFIX)
+                || stem != suite.name
+                || builtin.contains(&suite.name)
+            {
+                continue;
+            }
+            let modified = std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            mine.push((modified, suite));
+        }
+        mine.sort_by(|a, b| b.0.cmp(&a.0));
+        suites.extend(mine.into_iter().map(|(_, s)| s));
         Ok(suites)
+    }
+
+    fn my_tests_dir(&self) -> PathBuf {
+        self.env_snapshot()
+            .get("MJ_MY_TESTS_DIR")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.settings.runs_dir.join("my-tests"))
+    }
+
+    fn is_mine(&self, suite: &Suite) -> bool {
+        let dir = self.my_tests_dir();
+        suite
+            .path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|parent| parent == dir.as_path())
+            .unwrap_or(false)
+    }
+
+    /// Short names for progress lines and the results view. Your own
+    /// questions are titled by their first words; ready-made pilot tasks
+    /// keep their fixed titles (their prompts stay hidden).
+    fn task_titles(&self, suite: &Suite) -> BTreeMap<String, String> {
+        let mut out: BTreeMap<String, String> = titles()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        if self.is_mine(suite) {
+            for task in &suite.tasks {
+                out.insert(task.id.clone(), short_title(&strip_suffix(&task.prompt)));
+            }
+        }
+        out
     }
 
     fn load_named(&self, name: &str) -> Result<Suite, String> {
@@ -422,17 +478,17 @@ impl Session {
         for (spec, name, name_hi, blurb, blurb_hi) in [
             (
                 "oracle",
-                "Correct-answer check",
-                "सही उत्तर वाली जाँच",
-                "Returns the expected answer so you can see the scorer work. Not an AI model.",
-                "अपेक्षित उत्तर देता है, ताकि स्कोर जाँचा जा सके। यह एआई मॉडल नहीं है।",
+                "Answer-key bot",
+                "उत्तर-कुंजी बॉट",
+                "A pretend AI that copies from the answer key, so it is always right. Free. Use it to see how the app works.",
+                "एक नकली एआई जो उत्तर-कुंजी से नकल करता है, इसलिए हमेशा सही। मुफ़्त। ऐप कैसे काम करता है, यह देखने के लिए।",
             ),
             (
                 "echo",
-                "Echo check",
-                "दोहराने वाली जाँच",
-                "Repeats the question and should fail. That shows the scorer is awake.",
-                "प्रश्न को दोहराता है और फेल होना चाहिए। इससे पता चलता है कि स्कोर जाग रहा है।",
+                "Parrot bot",
+                "तोता बॉट",
+                "A pretend AI that just repeats your question, so it is usually wrong. Free. Shows that wrong answers get caught.",
+                "एक नकली एआई जो बस आपका प्रश्न दोहराता है, इसलिए ज़्यादातर गलत। मुफ़्त। दिखाता है कि गलत उत्तर पकड़े जाते हैं।",
             ),
         ] {
             models.push(json!({"spec": spec, "name": name, "name_hi": name_hi,
@@ -449,8 +505,10 @@ impl Session {
                 continue;
             }
             let blurb = model_blurb(model);
+            let pretty = pretty_model(model);
             models.push(json!({
-                "spec": format!("model:{provider}/{model}"), "name": model, "name_hi": model,
+                "spec": format!("model:{provider}/{model}"), "name": pretty, "name_hi": pretty,
+                "model": model,
                 "provider": provider, "blurb": blurb, "blurb_hi": blurb, "free": false,
                 "suggested": SUGGESTED.contains(&model), "runnable": true,
                 "price_usd": {"input": price.input, "output": price.output},
@@ -483,7 +541,18 @@ impl Session {
         *self.names.lock().unwrap() = names;
         let mut packs = Vec::new();
         for suite in self.suites()? {
-            let (name, name_hi, badge, summary, summary_hi) = pack_copy(&suite);
+            let mine = self.is_mine(&suite);
+            let (name, name_hi, badge, summary, summary_hi) = if mine {
+                (
+                    suite.description.clone(),
+                    suite.description.clone(),
+                    "My test".to_string(),
+                    String::new(),
+                    String::new(),
+                )
+            } else {
+                pack_copy(&suite)
+            };
             let mut languages: Vec<&str> =
                 suite.tasks.iter().map(|t| t.language.as_str()).collect();
             languages.sort();
@@ -491,7 +560,7 @@ impl Session {
             packs.push(json!({
                 "id": suite.name, "name": name, "name_hi": name_hi, "badge": badge,
                 "summary": summary, "summary_hi": summary_hi,
-                "recommended": suite.name == "india-pilot",
+                "recommended": suite.name == "india-pilot", "mine": mine,
                 "tasks": suite.tasks.len(), "languages": languages,
                 "validation_status": suite.validation_status}));
         }
@@ -575,6 +644,28 @@ impl Session {
     }
 }
 
+/// "claude-haiku-4-5" -> "Claude Haiku 4.5"; other ids stay as they are.
+fn pretty_model(model: &str) -> String {
+    let parts: Vec<&str> = model.split('-').collect();
+    let numeric = |s: &&str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    match parts.as_slice() {
+        ["claude", family, major, rest @ ..]
+            if family.chars().all(|c| c.is_ascii_lowercase())
+                && numeric(major)
+                && rest.len() <= 1
+                && rest.iter().all(numeric) =>
+        {
+            let mut name = format!("Claude {}{} {major}", family[..1].to_uppercase(), &family[1..]);
+            if let Some(minor) = rest.first() {
+                name.push('.');
+                name.push_str(minor);
+            }
+            name
+        }
+        _ => model.to_string(),
+    }
+}
+
 fn model_blurb(model: &str) -> &'static str {
     match model {
         "claude-haiku-4-5" | "claude-haiku-5-5" => "A smaller Claude model. Lower price per token.",
@@ -588,19 +679,19 @@ fn model_blurb(model: &str) -> &'static str {
 fn pack_copy(suite: &Suite) -> (String, String, String, String, String) {
     match suite.name.as_str() {
         "india-pilot" => (
-            "India pilot".into(), "भारत पायलट".into(), "Pilot set".into(),
-            "Start here. Short synthetic tasks about rupees, records and a missing date. Safe to share. Unvalidated pilot. Not a ranking.".into(),
-            "यहीं से शुरू करें। रुपये, रिकॉर्ड और एक गायब तारीख पर छोटे कृत्रिम प्रश्न। बाँटने योग्य। जाँच प्रमाणित नहीं। यह रैंकिंग नहीं है।".into(),
+            "India quick check".into(), "भारत झटपट जाँच".into(), "Pilot set".into(),
+            "Adding rupees, removing a repeated entry, and noticing a missing date.".into(),
+            "रुपये जोड़ना, दोहराई गई एंट्री हटाना और गायब तारीख पहचानना।".into(),
         ),
         "railway-pilot" => (
-            "Railway smoke test".into(), "रेलवे जाँच".into(), "Extra fixture".into(),
-            "One extra synthetic task. Not a ranking.".into(),
-            "एक अतिरिक्त कृत्रिम प्रश्न। यह रैंकिंग नहीं है।".into(),
+            "Railway booking check".into(), "रेलवे बुकिंग जाँच".into(), "Extra fixture".into(),
+            "Fill in a train journey plan correctly.".into(),
+            "ट्रेन यात्रा की योजना सही ढंग से भरना।".into(),
         ),
         "example" => (
-            "Quick example".into(), "छोटा उदाहरण".into(), "Pipeline check".into(),
-            "Five tiny tasks to see the pipeline finish. Not a ranking.".into(),
-            "पाइपलाइन देखने के लिए पाँच छोटे प्रश्न। यह रैंकिंग नहीं है।".into(),
+            "Mixed starter questions".into(), "मिले-जुले शुरुआती सवाल".into(), "Pipeline check".into(),
+            "Maths, a line of code, picking the right tool, a bill date, and a short reply that a person marks.".into(),
+            "गणित, कोड की एक लाइन, सही टूल चुनना, बिल की तारीख, और एक छोटा जवाब जिसे कोई व्यक्ति जाँचता है।".into(),
         ),
         _ => (
             suite.name.clone(), suite.name.clone(), suite.validation_status.clone(),
@@ -643,7 +734,7 @@ impl Session {
         for spec in &specs {
             built.push(self.runner(spec, &prices)?);
         }
-        let titles = titles();
+        let titles = self.task_titles(&loaded);
         let total = estimate["attempts"].as_i64().unwrap_or(0);
         if self.names.lock().unwrap().is_empty() {
             let _ = self.catalog();
@@ -676,7 +767,7 @@ impl Session {
         settings: &Settings,
         params: &Map<String, Value>,
         total: i64,
-        titles: &BTreeMap<&str, &str>,
+        titles: &BTreeMap<String, String>,
         emit_progress: &Emit,
     ) -> Result<Value, String> {
         let repeats = params.get("repeats").and_then(|v| v.as_i64()).unwrap_or(1);
@@ -693,7 +784,7 @@ impl Session {
         let on_attempt = |task_id: &str, runner: &str| {
             emit_progress(json!({
                 "type": "asking", "task_id": task_id,
-                "title": titles.get(task_id).copied().unwrap_or(task_id),
+                "title": titles.get(task_id).map(|s| s.as_str()).unwrap_or(task_id),
                 "runner": runner,
                 "runner_label": names.get(runner).cloned().unwrap_or_else(|| runner.to_string()),
                 "index": *done.lock().unwrap(), "total": total}));
@@ -704,7 +795,7 @@ impl Session {
             emit_progress(json!({
                 "type": "attempt", "index": *n, "total": total,
                 "task_id": record.task_id,
-                "title": titles.get(record.task_id.as_str()).copied().unwrap_or(&record.task_id),
+                "title": titles.get(record.task_id.as_str()).map(|s| s.as_str()).unwrap_or(&record.task_id),
                 "runner": record.runner,
                 "runner_label": names.get(&record.runner).cloned().unwrap_or_else(|| record.runner.clone()),
                 "passed": record.passed, "status": record.status,
@@ -808,12 +899,26 @@ impl Session {
             return Vec::new();
         };
         let rate = self.settings.usd_to_inr;
+        let labels: BTreeMap<String, String> = self
+            .suites()
+            .unwrap_or_default()
+            .iter()
+            .map(|s| {
+                let label = if self.is_mine(s) {
+                    s.description.clone()
+                } else {
+                    pack_copy(s).0
+                };
+                (s.name.clone(), label)
+            })
+            .collect();
         store
             .list_runs(30)
             .unwrap_or_default()
             .iter()
             .map(|run| {
                 json!({"id": run.id, "suite": run.suite_name, "status": run.status,
+                       "suite_label": labels.get(&run.suite_name).cloned().unwrap_or_else(|| run.suite_name.clone()),
                        "runners": run.runners, "spent_usd": run.spent_usd,
                        "spent_inr": run.spent_usd * rate, "started_at": run.started_at,
                        "repeats": run.repeats})
@@ -835,13 +940,13 @@ impl Session {
         let (run, payload) = self.run_or_raise(run_id)?;
         let payload = self.decorate(payload);
         let suite = self.load_named(&run.suite_name)?;
-        let titles = titles();
+        let titles = self.task_titles(&suite);
         let tasks: Vec<Value> = suite
             .tasks
             .iter()
             .map(|task| {
                 json!({"id": task.id,
-                       "title": titles.get(task.id.as_str()).copied().unwrap_or(&task.id),
+                       "title": titles.get(task.id.as_str()).map(|s| s.as_str()).unwrap_or(&task.id),
                        "category": task.category, "language": task.language,
                        "suite": suite.name, "track": task.capability_track,
                        "instruction": "", "context": "", "expected": {},
@@ -920,6 +1025,335 @@ impl Session {
         if let Some(port) = serve_async(Arc::new(self.sibling()), 0, false) {
             *self.http_port.lock().unwrap() = Some(port);
         }
+    }
+}
+
+const MY_TEST_PREFIX: &str = "my-";
+const MAX_QUESTIONS: usize = 50;
+const MAX_QUESTION_CHARS: usize = 4000;
+const MAX_ANSWER_CHARS: usize = 300;
+const MAX_TEST_NAME_CHARS: usize = 80;
+const NUMBER_SUFFIX: &str = "\n\nReply with the number only.";
+const EXACT_SUFFIX: &str = "\n\nReply with the answer only, nothing else.";
+const REGEX_META: &str = "\\.+*?()|[]{}^$#&-~";
+
+fn regex_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        if REGEX_META.contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn regex_unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The question as the person wrote it, without the short-answer request
+/// the app adds for exact and number checks.
+fn strip_suffix(prompt: &str) -> String {
+    prompt
+        .strip_suffix(NUMBER_SUFFIX)
+        .or_else(|| prompt.strip_suffix(EXACT_SUFFIX))
+        .unwrap_or(prompt)
+        .to_string()
+}
+
+fn short_title(question: &str) -> String {
+    let line = question
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let mut out: String = line.chars().take(70).collect();
+    if line.chars().count() > 70 {
+        out.push('…');
+    }
+    out
+}
+
+fn clip(text: &str, limit: usize) -> String {
+    let mut out: String = text.chars().take(limit).collect();
+    if text.chars().count() > limit {
+        out.push('…');
+    }
+    out
+}
+
+fn has_devanagari(text: &str) -> bool {
+    text.chars().any(|c| ('\u{0900}'..='\u{097F}').contains(&c))
+}
+
+fn question_form(task: &Task) -> Value {
+    let (check, answer) = match &task.grader {
+        GraderSpec::Regex { pattern, .. } => (
+            "includes",
+            regex_unescape(
+                pattern
+                    .strip_prefix(".*")
+                    .and_then(|p| p.strip_suffix(".*"))
+                    .unwrap_or(pattern),
+            ),
+        ),
+        GraderSpec::Exact { expected, .. } => {
+            ("exact", expected.first().cloned().unwrap_or_default())
+        }
+        GraderSpec::Numeric { expected_raw, .. } => ("number", expected_raw.clone()),
+        _ => ("includes", String::new()),
+    };
+    json!({"question": strip_suffix(&task.prompt), "answer": answer, "check": check})
+}
+
+impl Session {
+    fn mine_named(&self, id: &str) -> Result<Suite, String> {
+        if !id.starts_with(MY_TEST_PREFIX) || !valid_run_id(id) {
+            return Err("That test is not one of yours.".into());
+        }
+        let suite = self
+            .load_named(id)
+            .map_err(|_| "That test is no longer on this computer.".to_string())?;
+        if !self.is_mine(&suite) {
+            return Err("That test is not one of yours.".into());
+        }
+        Ok(suite)
+    }
+
+    fn get_test(&self, id: &str) -> Result<Value, String> {
+        let suite = self.mine_named(id)?;
+        let questions: Vec<Value> = suite.tasks.iter().map(question_form).collect();
+        Ok(json!({"id": suite.name, "name": suite.description, "questions": questions}))
+    }
+
+    fn save_test(&self, params: &Map<String, Value>) -> Result<Value, String> {
+        let name = params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            return Err("Give your test a name.".into());
+        }
+        if name.chars().count() > MAX_TEST_NAME_CHARS {
+            return Err(format!(
+                "Keep the name under {MAX_TEST_NAME_CHARS} letters."
+            ));
+        }
+        let questions = params
+            .get("questions")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if questions.is_empty() {
+            return Err("Add at least one question.".into());
+        }
+        if questions.len() > MAX_QUESTIONS {
+            return Err(format!("A test can have up to {MAX_QUESTIONS} questions."));
+        }
+        let id = match params.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            Some(existing) => self.mine_named(existing)?.name,
+            None => {
+                let token = tokens::random_token()?;
+                format!("{MY_TEST_PREFIX}{}", &token[..12])
+            }
+        };
+        let mut tasks = Vec::new();
+        for (index, item) in questions.iter().enumerate() {
+            let n = index + 1;
+            let field = |key: &str| {
+                item.get(key)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            };
+            let question = field("question");
+            let answer = field("answer");
+            let check = field("check");
+            if question.is_empty() {
+                return Err(format!("Question {n} is empty."));
+            }
+            if question.chars().count() > MAX_QUESTION_CHARS {
+                return Err(format!("Question {n} is too long. Keep it under {MAX_QUESTION_CHARS} letters."));
+            }
+            if question.contains('\0') || answer.contains('\0') {
+                return Err(format!("Question {n} has a character that cannot be saved."));
+            }
+            if !suite::placeholder_names(&question).is_empty() {
+                return Err(format!(
+                    "Question {n} uses double curly brackets {{{{ }}}}. Please remove them."
+                ));
+            }
+            if answer.is_empty() {
+                return Err(format!("Question {n} needs the right answer."));
+            }
+            if answer.chars().count() > MAX_ANSWER_CHARS {
+                return Err(format!("The right answer for question {n} is too long."));
+            }
+            let (grader, prompt) = match check.as_str() {
+                "includes" | "" => (
+                    json!({"type": "regex", "pattern": format!(".*{}.*", regex_escape(&answer)),
+                           "case_sensitive": false}),
+                    question.clone(),
+                ),
+                "exact" => (
+                    json!({"type": "exact", "expected": [answer], "case_sensitive": false,
+                           "normalize_whitespace": true}),
+                    format!("{question}{EXACT_SUFFIX}"),
+                ),
+                "number" => {
+                    let value = graders::indic_number(&answer).map_err(|_| {
+                        format!("The right answer for question {n} must be one number, like 100 or ₹2,500.")
+                    })?;
+                    (
+                        json!({"type": "numeric", "expected": value.normalize().to_string()}),
+                        format!("{question}{NUMBER_SUFFIX}"),
+                    )
+                }
+                _ => return Err(format!("Choose how to check question {n}.")),
+            };
+            let mut task = json!({
+                "id": format!("Q{n:02}"), "version": 1, "category": "custom_questions",
+                "language": if has_devanagari(&question) { "hi-IN" } else { "en-IN" },
+                "prompt": prompt, "grader": grader,
+                "max_output_tokens": 1024, "timeout_s": 120});
+            if task["grader"]["type"] == "regex" {
+                // The free answer-key bot replies with the reference answer.
+                task["reference"] = json!(answer);
+            }
+            tasks.push(task);
+        }
+        let document = json!({
+            "name": id, "version": "1", "description": name,
+            "validation_status": "unvalidated_pilot", "tasks": tasks});
+        let dir = self.my_tests_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Could not save the test: {e}"))?;
+        let target = dir.join(format!("{id}.yaml"));
+        let draft = dir.join(format!(".{id}.draft"));
+        let text = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
+        std::fs::write(&draft, text + "\n").map_err(|e| format!("Could not save the test: {e}"))?;
+        if let Err(error) = load_suite(&draft) {
+            let _ = std::fs::remove_file(&draft);
+            return Err(format!("The test could not be saved: {error}"));
+        }
+        std::fs::rename(&draft, &target).map_err(|e| format!("Could not save the test: {e}"))?;
+        Ok(json!({"id": id, "name": name, "questions": tasks.len()}))
+    }
+
+    fn delete_test(&self, id: &str) -> Result<Value, String> {
+        let suite = self.mine_named(id)?;
+        if let Some(path) = &suite.path {
+            std::fs::remove_file(path).map_err(|e| format!("Could not delete the test: {e}"))?;
+        }
+        Ok(json!({"deleted": suite.name}))
+    }
+
+    /// Worst-case cost of one pack for every priced model, so the AI picker
+    /// can say "up to ₹x for this test" before anything is chosen.
+    fn pack_costs(&self, params: &Map<String, Value>) -> Result<Value, String> {
+        let suite = self.load_named(params.get("suite").and_then(|v| v.as_str()).unwrap_or(""))?;
+        let repeats = params
+            .get("repeats")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1)
+            .clamp(1, MAX_REPEATS);
+        let prices = self.prices();
+        let env = self.env_snapshot();
+        let mut costs = Map::new();
+        for spec in ["oracle", "echo"] {
+            costs.insert(spec.into(), json!(0.0));
+        }
+        for key in prices.prices.keys() {
+            let Some((provider, model)) = key.split_once('/') else {
+                continue;
+            };
+            if ["ollama", "vllm"].contains(&provider) || model == "*" {
+                continue;
+            }
+            let spec = format!("model:{provider}/{model}");
+            let Ok(runner) = make_runner(&spec, &prices, &env) else {
+                continue;
+            };
+            let rows = engine::estimate(&suite.tasks, std::slice::from_ref(&runner));
+            let cost = if rows.iter().any(|r| r.cost_usd.is_none()) {
+                Value::Null
+            } else {
+                json!(repeats as f64 * rows.iter().map(|r| r.cost_usd.unwrap_or(0.0)).sum::<f64>())
+            };
+            costs.insert(spec, cost);
+        }
+        Ok(json!({"usd_to_inr": self.settings.usd_to_inr, "repeats": repeats,
+                  "questions": suite.tasks.len(), "costs": costs}))
+    }
+
+    /// What each AI said, next to the right answer. Only for tests people
+    /// wrote themselves; ready-made pilot prompts and answers stay hidden.
+    fn answers(&self, run_id: &str) -> Result<Value, String> {
+        let (run, _) = self.run_or_raise(run_id)?;
+        let suite = self
+            .load_named(&run.suite_name)
+            .map_err(|_| "This test was deleted, so its questions are no longer here.".to_string())?;
+        if !self.is_mine(&suite) {
+            return Err("Answers are shown only for tests you wrote yourself.".into());
+        }
+        let store = Store::open(&self.settings.db_path)?;
+        let payload = self.decorate(export::result_export(&store, run_id, true)?.value);
+        drop(store);
+        let mut labels = BTreeMap::new();
+        for model in payload["models"].as_array().cloned().unwrap_or_default() {
+            let id = model["runner_id"].as_str().unwrap_or_default().to_string();
+            let label = model["configuration_name"].as_str().unwrap_or(&id).to_string();
+            labels.insert(id, label);
+        }
+        let hashes: BTreeMap<String, String> = suite
+            .tasks
+            .iter()
+            .map(|t| (t.id.clone(), t.content_hash()))
+            .collect();
+        let questions: Vec<Value> = suite
+            .tasks
+            .iter()
+            .map(|task| {
+                let mut form = question_form(task);
+                form["id"] = json!(task.id);
+                form
+            })
+            .collect();
+        let rows: Vec<Value> = payload["results"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|r| {
+                let task_id = r["task_id"].as_str().unwrap_or_default();
+                let runner = r["runner_id"].as_str().unwrap_or_default();
+                json!({
+                    "task_id": task_id, "runner": runner,
+                    "label": labels.get(runner).cloned().unwrap_or_else(|| runner.to_string()),
+                    "repeat": r["repeat_index"], "passed": r["passed"],
+                    "status": r["status"], "grade_status": r["grade_status"],
+                    "edited": hashes.get(task_id).map(|h| r["task_sha256"].as_str() != Some(h.as_str())).unwrap_or(true),
+                    "output": r["output"].as_str().map(|o| clip(&self.scrub(o), 4000)),
+                    "error": r["error"].as_str().map(|e| self.scrub(e))})
+            })
+            .collect();
+        Ok(json!({"run_id": run.id, "name": suite.description,
+                  "questions": questions, "answers": rows}))
     }
 }
 
@@ -1455,6 +1889,13 @@ fn dispatch(session: &Arc<Session>, request: &Value, emit: &Emit) {
             "report" => session.report(&run_id_param())?,
             "list_runs" => Value::Array(session.list_runs()),
             "share_card" => session.share_card(&run_id_param())?,
+            "pack_costs" => session.pack_costs(params)?,
+            "get_test" => session.get_test(params.get("id").and_then(|v| v.as_str()).unwrap_or(""))?,
+            "save_test" => session.save_test(params)?,
+            "delete_test" => {
+                session.delete_test(params.get("id").and_then(|v| v.as_str()).unwrap_or(""))?
+            }
+            "answers" => session.answers(&run_id_param())?,
             "dashboard_url" => json!({
                 "url": session.dashboard_url(
                     &run_id_param(),
@@ -1527,5 +1968,38 @@ fn main() {
     // stdin closed: let an in-flight run finish writing its reply first.
     for handle in run_threads {
         let _ = handle.join();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn includes_answers_match_literally_and_round_trip() {
+        for answer in ["Jaipur", "(a) ₹5 [x] .*+?", "a|b ^$ {1} #&-~ \\n", "मंगलवार"] {
+            let pattern = format!(".*{}.*", regex_escape(answer));
+            let built = regex::Regex::new(&format!("^(?:{pattern})$")).unwrap();
+            assert!(built.is_match(&format!("The answer is {answer}.")), "{answer}");
+            assert!(!built.is_match("something else"), "{answer}");
+            assert_eq!(regex_unescape(&regex_escape(answer)), answer);
+        }
+    }
+
+    #[test]
+    fn model_ids_read_like_names() {
+        assert_eq!(pretty_model("claude-haiku-4-5"), "Claude Haiku 4.5");
+        assert_eq!(pretty_model("claude-opus-5"), "Claude Opus 5");
+        assert_eq!(pretty_model("claude-fable-5-1"), "Claude Fable 5.1");
+        assert_eq!(pretty_model("gpt-4.1-mini"), "gpt-4.1-mini");
+        assert_eq!(pretty_model("claude-3-5-sonnet-20241022"), "claude-3-5-sonnet-20241022");
+    }
+
+    #[test]
+    fn short_answer_requests_are_hidden_from_the_question() {
+        assert_eq!(strip_suffix(&format!("How much?{NUMBER_SUFFIX}")), "How much?");
+        assert_eq!(strip_suffix(&format!("Which day?{EXACT_SUFFIX}")), "Which day?");
+        assert_eq!(short_title("  \n First line\nsecond"), "First line");
+        assert_eq!(short_title(&"x".repeat(80)).chars().count(), 71);
     }
 }
