@@ -36,4 +36,12 @@
   });
   media.addEventListener("change", () => { if (preference === "system") apply(); });
   window.kmTheme = () => resolved();
+  window.kmThemePreference = () => preference;
+  /* One button steps Auto -> Light -> Dark, for people who never open settings. */
+  window.kmCycleTheme = () => {
+    const order = ["system", "light", "dark"];
+    preference = order[(order.indexOf(preference) + 1) % order.length];
+    try { localStorage.setItem(key, preference); } catch { /* This page still updates. */ }
+    apply(true);
+  };
 })();

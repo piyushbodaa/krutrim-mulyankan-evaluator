@@ -1,18 +1,26 @@
 # Krutrim Mulyankan desktop
 
-A window for the evaluator. People add provider keys, pick models and a test pack, see the worst-case cost in rupees and dollars, confirm, and run. Results open in the same At a glance view (report card, speedometer, third umpire). The command line is unchanged for people who want it.
+A window for testing AI with your own questions, made for people who have never run an "eval". It has three steps and uses everyday words:
+
+1. **Questions.** Pick a ready-made test, or write your own: type each question, its right answer, and how to check the reply ("mentions this", "is a number", "is exactly this"). Starter examples (shop maths in rupees, India general knowledge, Hindi and English words) can be saved and edited.
+2. **AIs.** Pick up to six. Two free demo bots need no account: the Answer-key bot (always right) and the Parrot bot (repeats the question, so it is usually wrong). Real AIs show the most they can cost for this test, in rupees.
+3. **Start.** One screen shows the total, a spending limit in rupees, and, for paid AIs, an "I agree" box next to the Start button.
+
+Results open as a report card: one tick or cross per answer, time taken, cost, and a plain "too close to call" note when the gap could be luck. For tests you wrote, **Every answer** shows what each AI replied next to the right answer. **Charts and details** is the same At a glance view as before. The command line is unchanged for people who want it.
+
+Your own tests are saved as ordinary test packs in the app's data folder (`runs/my-tests/`). They never leave the computer except as questions sent to the AIs you pick.
 
 The window does not ask anyone to open a terminal. Installers from CI are unsigned; signing is a later step ([SIGNING.md](SIGNING.md)).
 
 ## Honesty labels
 
-These stay visible, in English, in light and dark mode:
+These stay visible, in English, in light and dark mode (in the footer):
 
 - Unvalidated pilot
 - Not a ranking
 - Too close to call — the gap could be chance, not that the systems are equal
 
-The pilot set is the first test pack. Practice checks (correct-answer and echo) cost nothing and are not AI models.
+Ready-made pilot questions and answers stay hidden in the app; replies are shown only for tests people write themselves.
 
 ## Keys
 
