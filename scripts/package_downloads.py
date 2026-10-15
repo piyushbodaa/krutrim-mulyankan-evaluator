@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -206,6 +207,30 @@ def packaged_engine(directory: Path) -> Path:
     return one(path for path in directory.rglob(name) if path.parent.name == "engine").parent
 
 
+def verify_macos_transport(app: Path) -> None:
+    # macOS 14+ requires an ATS exception for the dashboard's numeric loopback
+    # address. Check the actual bundled plist, including any bundler overrides.
+    with (app / "Contents" / "Info.plist").open("rb") as source:
+        info = plistlib.load(source)
+    security = info.get("NSAppTransportSecurity", {})
+    exceptions = security.get("NSExceptionDomains", {})
+    require(
+        set(exceptions) == {"127.0.0.1"},
+        "macOS app must restrict its HTTP transport exception to 127.0.0.1",
+    )
+    require(
+        exceptions["127.0.0.1"].get("NSExceptionAllowsInsecureHTTPLoads") is True,
+        "macOS app must permit HTTP for its loopback dashboard",
+    )
+    for key in (
+        "NSAllowsArbitraryLoads",
+        "NSAllowsArbitraryLoadsInWebContent",
+        "NSAllowsArbitraryLoadsForMedia",
+        "NSAllowsLocalNetworking",
+    ):
+        require(security.get(key) is not True, f"macOS app must not enable broad {key}")
+
+
 def package_desktop(target: str, platform: str) -> None:
     bundle = ROOT / "desktop/src-tauri/target" / target / "release/bundle"
     DOWNLOADS.mkdir(parents=True, exist_ok=True)
@@ -238,6 +263,7 @@ def package_desktop(target: str, platform: str) -> None:
             run(["hdiutil", "attach", dmg, "-readonly", "-nobrowse", "-mountpoint", mount])
             try:
                 app = one(mount.glob("*.app"))
+                verify_macos_transport(app)
                 run(["codesign", "--verify", "--deep", "--strict", app])
                 smoke_engine(packaged_engine(app))
             finally:

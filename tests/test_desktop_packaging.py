@@ -6,6 +6,7 @@ anything; the desktop workflow does the real building.
 
 import hashlib
 import json
+import plistlib
 import runpy
 import tomllib
 from pathlib import Path
@@ -175,6 +176,63 @@ def test_windows_cli_and_engine_include_the_visual_cpp_runtime():
     config = tomllib.loads(_read(".cargo/config.toml"))
     flags = config["target"]["x86_64-pc-windows-msvc"]["rustflags"]
     assert "target-feature=+crt-static" in flags
+
+
+@pytest.mark.parametrize("fmt", [plistlib.FMT_XML, plistlib.FMT_BINARY])
+def test_macos_bundle_allows_only_the_loopback_dashboard(tmp_path, fmt):
+    conf = json.loads(_read("desktop/src-tauri/tauri.conf.json"))
+    assert conf["bundle"]["macOS"]["exceptionDomain"] == "127.0.0.1"
+    app = tmp_path / "Krutrim Mulyankan.app"
+    contents = app / "Contents"
+    contents.mkdir(parents=True)
+    info = {
+        "NSAppTransportSecurity": {
+            "NSExceptionDomains": {
+                "127.0.0.1": {
+                    "NSExceptionAllowsInsecureHTTPLoads": True,
+                    "NSIncludesSubdomains": True,
+                }
+            }
+        }
+    }
+    (contents / "Info.plist").write_bytes(plistlib.dumps(info, fmt=fmt))
+    PACKAGING["verify_macos_transport"](app)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing_policy",
+        "missing_loopback",
+        "http_blocked",
+        "external_domain",
+        "NSAllowsArbitraryLoads",
+        "NSAllowsArbitraryLoadsInWebContent",
+        "NSAllowsArbitraryLoadsForMedia",
+        "NSAllowsLocalNetworking",
+    ],
+)
+def test_macos_bundle_rejects_blocked_dashboard_or_broad_http_policy(tmp_path, defect):
+    app = tmp_path / "Krutrim Mulyankan.app"
+    contents = app / "Contents"
+    contents.mkdir(parents=True)
+    loopback = {"NSExceptionAllowsInsecureHTTPLoads": True}
+    exceptions = {"127.0.0.1": loopback}
+    security = {"NSExceptionDomains": exceptions}
+    info = {"NSAppTransportSecurity": security}
+    if defect == "missing_policy":
+        info.clear()
+    elif defect == "missing_loopback":
+        exceptions.clear()
+    elif defect == "http_blocked":
+        loopback["NSExceptionAllowsInsecureHTTPLoads"] = False
+    elif defect == "external_domain":
+        exceptions["example.com"] = dict(loopback)
+    else:
+        security[defect] = True
+    (contents / "Info.plist").write_bytes(plistlib.dumps(info))
+    with pytest.raises(RuntimeError, match="macOS app must"):
+        PACKAGING["verify_macos_transport"](app)
 
 
 def test_release_triggers_and_publisher_use_the_validated_version_and_commit():
