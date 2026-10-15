@@ -126,6 +126,9 @@ jobs:
           files: |
             release/Krutrim-Mulyankan-linux.AppImage
             release/Krutrim-Mulyankan-linux.deb
+            release/Krutrim-Mulyankan-linux.rpm
+            release/Krutrim-Mulyankan-linux.pkg.tar.zst
+            release/Krutrim-Mulyankan-linux-setup.tar.gz
             release/km-desktop-linux.tar.gz
             release/Krutrim-Mulyankan-windows.exe
             release/Krutrim-Mulyankan-mac-arm64.dmg
@@ -141,8 +144,12 @@ jobs:
             and macOS (Apple Silicon and Intel). Each package is built and its
             evaluation engine smoke-tested on a native runner before publication.
 
-            Desktop: Linux AppImage, Debian/Ubuntu DEB, portable Linux tar.gz,
+            Desktop: Linux AppImage, Debian/Ubuntu DEB, Fedora/openSUSE RPM,
+            Arch/Omarchy package, portable Linux tar.gz,
             Windows installer, and separate Apple Silicon / Intel macOS DMGs.
+            Linux setup: extract Krutrim-Mulyankan-linux-setup.tar.gz, then open
+            Install Krutrim Mulyankan. It adds the app to your user account and
+            application menu without a terminal or administrator password.
             CLI: extract the matching km-<platform>-<architecture> archive;
             the executable and bundled suites are included. Python users can
             install the platform-independent wheel.

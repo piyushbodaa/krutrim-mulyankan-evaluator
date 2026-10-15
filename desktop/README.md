@@ -59,17 +59,24 @@ uv run ruff check src/kritrim_mulyankan/desktop_bridge.py tests/test_desktop_bri
 
 The rest of `uv run pytest` stays required. The CLI (`uv run km …`) is the same tool it was.
 
-## Try it on Arch / Omarchy (Hyprland, Wayland)
+## Install on Linux, including Arch / Omarchy
 
-Install the system library the window draws with, then run either package. No terminal is needed after the first launch; the two commands below are only how you start the file.
+Download `Krutrim-Mulyankan-linux-setup.tar.gz` from the project download page.
+Extract it in Files, open the extracted folder, and double-click **Install Krutrim
+Mulyankan**. Choose **Install & Open**. Setup installs for your account, adds an app
+launcher and a **Manage installation** action, and opens the app. It includes the
+application and needs no terminal, administrator password, or FUSE. A Linux x86-64
+desktop with GTK 3 is required. The executable permission is preserved inside the
+archive, so the installer must be extracted before opening it.
 
-```sh
-sudo pacman -S webkit2gtk-4.1 gtk3
-chmod +x Krutrim-Mulyankan_*.AppImage
-./Krutrim-Mulyankan_*.AppImage
-```
+Native Debian/Ubuntu, RPM, and Arch packages are alternatives for system package
+managers; see [NATIVE-LINUX.md](NATIVE-LINUX.md). The raw AppImage remains a portable
+option that requires permission to execute. It is not the graphical installer.
 
-If AppImage reports that FUSE is missing, unpack the `.tar.gz` and run `AppRun` in that folder, or start the AppImage with `--appimage-extract-and-run`. The window turns off WebKit's DMA-BUF renderer unless you have already set `WEBKIT_DISABLE_DMABUF_RENDERER`. On Hyprland it also turns off compositing mode so the window is not blank. Keys use the Secret Service (gnome-keyring or equivalent). If that service is locked, the window still opens and practice checks still run.
+The window turns off WebKit's DMA-BUF renderer unless you have already set
+`WEBKIT_DISABLE_DMABUF_RENDERER`. On Hyprland it also turns off compositing mode so
+the window is not blank. Keys use the Secret Service (gnome-keyring or equivalent).
+If that service is locked, the window still opens and practice checks still run.
 
 ## Native builds and GitHub Releases
 
@@ -93,8 +100,11 @@ configuring a platform does not itself make it released.
 
 | File | What it is |
 |---|---|
+| `Krutrim-Mulyankan-linux-setup.tar.gz` | Offline graphical Linux x86-64 installer; extract, then open Install Krutrim Mulyankan. |
 | `Krutrim-Mulyankan-linux.AppImage` | Linux x86-64 desktop app. |
 | `Krutrim-Mulyankan-linux.deb` | Debian/Ubuntu x86-64 desktop package. |
+| `Krutrim-Mulyankan-linux.rpm` | Fedora/openSUSE x86-64 desktop package. |
+| `Krutrim-Mulyankan-linux.pkg.tar.zst` | Arch/Omarchy x86-64 desktop package. |
 | `km-desktop-linux.tar.gz` | Extracted Linux app for systems without FUSE. |
 | `Krutrim-Mulyankan-windows.exe` | Windows x86-64 NSIS installer. |
 | `Krutrim-Mulyankan-mac-arm64.dmg` | Apple Silicon Mac app disk image. |
