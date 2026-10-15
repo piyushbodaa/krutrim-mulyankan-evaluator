@@ -67,6 +67,17 @@ and installer checks.
 
 More: [docs/DEPLOY.md](docs/DEPLOY.md) (launch + hosted preview), [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Automatic updates
+
+From version 0.4.1, installed copies update themselves. Each release is signed in CI with the project's update key, and every copy checks that signature before installing anything.
+
+- **Desktop app:** checks shortly after it opens and every six hours. AppImage (including the graphical Linux setup) and macOS copies download and install the new version in the background, then show **Restart now**. Windows, `.deb` and `.rpm` copies show **Update now**, because they run the installer or ask for the computer's password. Arch package installs link to the download page. Nothing restarts without a click.
+- **`km` CLI (standalone or pip/uv):** once a day, after the command you ran has finished, it updates itself in place. `km update` updates now, `km update --check` only reports, and `km --version` shows the version. Set `KM_NO_AUTO_UPDATE=1` to turn off the daily check; CI environments and development checkouts skip it automatically.
+
+Copies installed before 0.4.1 cannot update themselves. Install 0.4.1 once; every release after that arrives automatically.
+
+Release signing needs two repository secrets, `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep a private backup of the key: installed copies only accept updates signed with it.
+
 ## Online vs local-only
 
 | Feature | Hosted preview | Local (`km ui`) |

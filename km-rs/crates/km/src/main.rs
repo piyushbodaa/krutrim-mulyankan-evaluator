@@ -13,8 +13,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod archive;
 mod keys;
 mod tui;
+mod update;
 
 static NO_ANIM: AtomicBool = AtomicBool::new(false);
 static USE_COLOR: AtomicBool = AtomicBool::new(false);
@@ -53,7 +55,12 @@ fn main() -> ExitCode {
         .skip(1)
         .filter(|a| a != "--no-anim")
         .collect();
-    match dispatch(&args) {
+    let result = dispatch(&args);
+    // Once a day, after the command itself, km updates itself in place.
+    if !matches!(args.first().map(String::as_str), Some("update" | "--version" | "-V" | "version")) {
+        update::auto();
+    }
+    match result {
         Ok(code) => ExitCode::from(code),
         Err(msg) => {
             eprintln!("{msg}");
@@ -82,6 +89,11 @@ fn dispatch(args: &[String]) -> Result<u8, String> {
         return Ok(0);
     };
     match cmd.as_str() {
+        "--version" | "-V" | "version" => {
+            println!("km {}", update::current());
+            Ok(0)
+        }
+        "update" => update::command(&args[1..]),
         "--help" | "-h" | "help" => {
             println!("{}", boxed(&main_help()));
             Ok(0)
@@ -116,7 +128,7 @@ fn boxed(text: &str) -> String {
 }
 
 fn main_help() -> String {
-    "Usage: km [OPTIONS] COMMAND [ARGS]...\n\nLocal tests for AI models, harnesses and agents.\n\nOptions:\n  --install-completion  Install completion for the current shell.\n  --show-completion     Show completion for the current shell, to copy or customize the installation.\n  --help                Show this message and exit.\n\nCommands:\n  list          List suites, runners, or past runs: km list suites|runners|runs\n  run           Run SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n  import-suite  Import a foreign suite directory into Mulyankan YAML.\n  ui            Open a local pilot workbench with task selection and free mock checks.\n  export        Write the schema-1.1 JSON export (default: latest run). Outputs are omitted unless --include-outputs is explicit.\n  report        Print the leaderboard for RUN_ID (default: latest run).\n".into()
+    "Usage: km [OPTIONS] COMMAND [ARGS]...\n\nLocal tests for AI models, harnesses and agents.\n\nOptions:\n  --install-completion  Install completion for the current shell.\n  --show-completion     Show completion for the current shell, to copy or customize the installation.\n  --help                Show this message and exit.\n\nCommands:\n  list          List suites, runners, or past runs: km list suites|runners|runs\n  run           Run SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n  import-suite  Import a foreign suite directory into Mulyankan YAML.\n  ui            Open a local pilot workbench with task selection and free mock checks.\n  export        Write the schema-1.1 JSON export (default: latest run). Outputs are omitted unless --include-outputs is explicit.\n  report        Print the leaderboard for RUN_ID (default: latest run).\n  update        Update km now (it also updates itself once a day; KM_NO_AUTO_UPDATE=1 turns that off).\n  version       Show the installed km version (also --version).\n".into()
 }
 
 fn load_dotenv() {

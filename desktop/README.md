@@ -86,6 +86,10 @@ The window turns off WebKit's DMA-BUF renderer unless you have already set
 the window is not blank. Keys use the Secret Service (gnome-keyring or equivalent).
 If that service is locked, the window still opens and practice checks still run.
 
+## Updates
+
+The window updates itself from signed releases; see "Automatic updates" in the main [README](../README.md). `latest.json` (update manifest), the macOS `.app.tar.gz` update archives and `SHA256SUMS.sig` are published with every release. For testing, `KM_UPDATE_MANIFEST_URL` points the app or `km` at another manifest; updates must still be signed with the release key.
+
 ## Native builds and GitHub Releases
 
 `.github/workflows/build-downloads.yml` is shared by desktop CI and releases.
