@@ -99,7 +99,7 @@ function gSkill(key) {
 }
 function gKind(track) { return GLANCE_KINDS[track] || ['AI system', 'AI systems', 'Evaluated system']; }
 function gAvatar(system, small) {
-  const badge = node('span', system.initials, 'g-avatar' + (system.index === 0 ? ' g-first' : '') + (small ? ' g-small' : ''));
+  const badge = node('span', system.initials, 'g-avatar' + (small ? ' g-small' : ''));
   badge.setAttribute('aria-hidden', 'true');
   return badge;
 }
@@ -123,15 +123,23 @@ function gMeter(passed, total, text, className) {
   meter.setAttribute('aria-label', text);
   return meter;
 }
-// Phone-signal bars: one bar per task, full when right on every try, half when right on some.
+// Signal bars, drawn as square SVG rectangles: one bar per task, full when right on every try,
+// half when right on some. Heights step on a fixed pixel grid so the mark stays geometric.
 function gSignal(passed, total, text, sometimes = 0) {
   const signal = gMeter(passed, total, text, 'g-signal'), shown = Math.min(total, 12), scale = shown / Math.max(total, 1);
   const full = Math.round(passed * scale), half = Math.round((passed + sometimes) * scale) - full;
+  const barW = 3, gap = 2, height = 16, width = shown * barW + Math.max(shown - 1, 0) * gap;
+  const svg = gSvg('svg', {viewBox: `0 0 ${width} ${height}`, width: String(width), height: String(height), 'aria-hidden': 'true'});
   for (let index = 0; index < shown; index++) {
-    const bar = node('i', undefined, index < full ? 'on' : index < full + half ? 'half' : '');
-    bar.style.height = Math.round(30 + 70 * (index + 1) / shown) + '%';
-    signal.append(bar);
+    const barH = Math.round(4 + 12 * (index + 1) / shown), x = index * (barW + gap), y = height - barH;
+    const kind = index < full ? 'on' : index < full + half ? 'half' : 'off';
+    if (kind === 'half') {
+      svg.append(gSvg('rect', {x, y, width: barW, height: barH, class: 'off'}));
+      const fill = Math.ceil(barH / 2);
+      svg.append(gSvg('rect', {x, y: y + (barH - fill), width: barW, height: fill, class: 'on'}));
+    } else svg.append(gSvg('rect', {x, y, width: barW, height: barH, class: kind}));
   }
+  signal.append(svg);
   return signal;
 }
 function gDots(passed, total, text, sometimes = 0) {
@@ -292,16 +300,17 @@ function gMargin(v, name) {
   }
   const reach = 1.1 * Math.max(Math.abs(low), Math.abs(high), Math.abs(estimate), v.metric === 'accuracy' ? 10 : Math.log(2));
   const at = value => 50 + value / reach * 50;
-  const line = node('div', undefined, 'g-margin'), track = node('div', undefined, 'g-margin-track'), band = node('i', undefined, 'g-margin-band');
-  const dot = node('b', undefined, 'g-margin-dot'), ends = node('div', undefined, 'g-margin-ends'), ahead = v.metric === 'accuracy' ? ' ahead' : ' faster';
-  band.style.left = at(Math.min(low, high)) + '%';
-  band.style.width = Math.max(at(Math.max(low, high)) - at(Math.min(low, high)), 0.6) + '%';
-  dot.style.left = at(estimate) + '%';
-  track.append(node('span', undefined, 'g-margin-mid'), band, dot);
+  const line = node('div', undefined, 'g-margin'), ends = node('div', undefined, 'g-margin-ends'), ahead = v.metric === 'accuracy' ? ' ahead' : ' faster';
+  const svg = gSvg('svg', {viewBox: '0 0 1000 28', class: 'g-margin-svg', preserveAspectRatio: 'none', 'aria-hidden': 'true'});
+  const x0 = at(Math.min(low, high)) * 10, x1 = at(Math.max(low, high)) * 10, mark = at(estimate) * 10;
+  svg.append(gSvg('line', {x1: 0, y1: 18, x2: 1000, y2: 18, class: 'base'}));
+  svg.append(gSvg('line', {x1: 500, y1: 2, x2: 500, y2: 26, class: 'mid'}));
+  svg.append(gSvg('rect', {x: x0.toFixed(2), y: 11, width: Math.max(x1 - x0, 4).toFixed(2), height: 14, class: 'range'}));
+  svg.append(gSvg('rect', {x: (mark - 5).toFixed(2), y: 4, width: 10, height: 20, class: 'mark'}));
   ends.append(node('span', name(v.runner_b) + ahead), node('span', v.metric === 'accuracy' ? 'No gap' : 'Same speed'), node('span', name(v.runner_a) + ahead));
   line.setAttribute('role', 'img');
   line.setAttribute('aria-label', `Likely range ${low < 0 && high > 0 ? 'crosses' : 'does not cross'} the middle line`);
-  line.append(track, ends);
+  line.append(svg, ends);
   return line;
 }
 function gVerdictText(v, name) {
@@ -394,7 +403,7 @@ function gScale(systems) {
   return {max, step: {2: 0.5, 5: 1, 10: 2, 15: 5, 20: 5, 30: 10, 40: 10, 60: 20, 80: 20, 100: 20, 120: 30}[max]};
 }
 function gGauge(system, scale) {
-  const cx = 120, cy = 124, r = 100, rate = system.median > 0 ? 60 / system.median : system.median === 0 ? Infinity : null;
+  const cx = 120, cy = 112, r = 86, rate = system.median > 0 ? 60 / system.median : system.median === 0 ? Infinity : null;
   const fraction = rate === null ? 0 : Math.min(rate / scale.max, 1);
   const at = (part, radius) => {
     const angle = (210 - 240 * part) * Math.PI / 180;
@@ -404,30 +413,30 @@ function gGauge(system, scale) {
     const [x0, y0] = at(from, radius), [x1, y1] = at(to, radius);
     return `M${x0.toFixed(2)} ${y0.toFixed(2)}A${radius} ${radius} 0 ${(to - from) * 240 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
   };
-  const svg = gSvg('svg', {viewBox: '0 0 240 178', class: 'g-gauge', role: 'img',
+  const svg = gSvg('svg', {viewBox: '0 0 240 164', class: 'g-gauge', role: 'img',
     'aria-label': `${system.short} speedometer: ${rate === null ? 'not measured' : gRateText(rate).toLowerCase()}`});
-  svg.append(gSvg('path', {d: arc(0, 1, r - 9), class: 'band'}));
-  if (rate !== null && fraction > 0.004) svg.append(gSvg('path', {d: arc(0, fraction, r - 9), class: 'sweep'}));
-  svg.append(gSvg('path', {d: arc(0, 1, r), class: 'rim'}));
+  svg.append(gSvg('path', {d: arc(0, 1, r), class: 'band'}));
+  if (rate !== null && fraction > 0.004) svg.append(gSvg('path', {d: arc(0, fraction, r), class: 'sweep'}));
   const minor = scale.step / 5, count = Math.round(scale.max / minor);
   for (let index = 0; index <= count; index++) {
-    const part = index / count, major = index % 5 === 0, [x0, y0] = at(part, r), [x1, y1] = at(part, r - (major ? 16 : 8));
+    const part = index / count, major = index % 5 === 0;
+    const [x0, y0] = at(part, r - 6), [x1, y1] = at(part, r - (major ? 18 : 11));
     svg.append(gSvg('line', {x1: x0.toFixed(2), y1: y0.toFixed(2), x2: x1.toFixed(2), y2: y1.toFixed(2), class: major ? 'tick major' : 'tick'}));
     if (major) {
-      const value = index * minor, [tx, ty] = at(part, r - 31), text = gSvg('text', {x: tx.toFixed(2), y: (ty + 4).toFixed(2), class: 'num'});
+      const value = index * minor, [tx, ty] = at(part, r - 32), text = gSvg('text', {x: tx.toFixed(2), y: (ty + 3).toFixed(2), class: 'num'});
       text.textContent = Number.isInteger(value) ? String(value) : value.toFixed(1);
       svg.append(text);
     }
   }
-  const unit = gSvg('text', {x: cx, y: cy + 44, class: 'unit'});
+  const unit = gSvg('text', {x: cx, y: cy + 32, class: 'unit'});
   unit.textContent = 'answers / min';
   svg.append(unit);
   if (rate !== null) {
-    const needle = gSvg('path', {d: `M${cx - 4} ${cy + 16}L${cx - 1.2} ${cy - r + 14}L${cx + 1.2} ${cy - r + 14}L${cx + 4} ${cy + 16}Z`, class: 'needle'});
+    const needle = gSvg('line', {x1: cx, y1: cy, x2: cx, y2: cy - r + 14, class: 'needle'});
     needle.style.transform = `rotate(${(-120 + 240 * fraction).toFixed(2)}deg)`;
     svg.append(needle);
   }
-  svg.append(gSvg('circle', {cx, cy, r: 9, class: 'hub'}), gSvg('circle', {cx, cy, r: 3, class: 'hub-dot'}));
+  svg.append(gSvg('circle', {cx, cy, r: 4, class: 'hub'}), gSvg('circle', {cx, cy, r: 1.5, class: 'hub-dot'}));
   return svg;
 }
 function glanceSpeed(data) {
