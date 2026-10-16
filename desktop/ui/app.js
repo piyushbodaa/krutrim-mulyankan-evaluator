@@ -563,6 +563,7 @@ function renderRunning() {
 async function startRun() {
   if ($("run").disabled) return;
   state.busy = true;
+  renderUpdate();
   state.run = {done: 0, total: state.estimate?.attempts || 1, tallies: new Map(), stopping: false};
   for (const spec of state.selected) state.run.tallies.set(spec, {right: 0, wrong: 0, other: 0});
   $("feed").replaceChildren();
@@ -582,9 +583,11 @@ async function startRun() {
     });
     state.busy = false;
     state.agreed = false;
+    renderUpdate();
     await showResults(result.run_id);
   } catch (error) {
     state.busy = false;
+    renderUpdate();
     $("now-asking").textContent = "";
     $("cancel").disabled = true;
     showNotice(t("r.failed") + " " + error.message);
@@ -898,6 +901,35 @@ async function refreshCatalog() {
   state.catalog = await bridge.call("catalog");
 }
 
+/* ---------- automatic updates ---------- */
+
+const updateState = {status: {state: "idle"}, dismissed: ""};
+
+function renderUpdate() {
+  const status = updateState.status || {};
+  const banner = $("update-banner");
+  const keys = {installed: ["upd.installed", "upd.restart"], ready: ["upd.ready", "upd.install"], manual: ["upd.manual", "upd.get"]};
+  const shown = keys[status.state] && updateState.dismissed !== status.state + status.version;
+  banner.hidden = !shown;
+  if (!shown) return;
+  const [textKey, buttonKey] = keys[status.state];
+  $("update-text").textContent = state.busy && status.state !== "manual" ? `${t(textKey, {v: status.version})} ${t("upd.busy")}` : t(textKey, {v: status.version});
+  $("update-go").textContent = t(buttonKey);
+  $("update-go").disabled = state.busy && status.state !== "manual";
+}
+
+async function applyUpdate() {
+  const status = updateState.status || {};
+  if (state.busy && status.state !== "manual") return;
+  try {
+    if (status.state === "manual") await bridge.openExternal(status.url);
+    else if (status.state === "installed") await bridge.updates.restart();
+    else if (status.state === "ready") await bridge.updates.apply();
+  } catch (error) {
+    showNotice(error.message || String(error));
+  }
+}
+
 /* ---------- wiring ---------- */
 
 function themeLabel() {
@@ -914,6 +946,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   document.addEventListener("km-lang", () => {
     themeLabel();
+    renderUpdate();
+    if (state.catalog) $("app-version").textContent = t("foot.version", {v: state.catalog.version});
     if (state.screen === "running") renderRunning();
     else if (state.screen === "results") { renderReportCard(); $("panel-answers").replaceChildren(); if (!$("panel-answers").hidden) renderAnswers(); }
     else if (state.screen === "builder") renderBuilder();
@@ -967,6 +1001,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("save-report").addEventListener("click", saveReport);
   $("new-test").addEventListener("click", () => go("questions"));
   $("modal-done").addEventListener("click", closeConnect);
+  $("update-go").addEventListener("click", applyUpdate);
+  $("update-later").addEventListener("click", () => {
+    updateState.dismissed = updateState.status.state + updateState.status.version;
+    renderUpdate();
+  });
+  bridge.updates.onStatus((status) => { updateState.status = status; renderUpdate(); }).catch(() => {});
+  bridge.updates.status().then((status) => { updateState.status = status || {}; renderUpdate(); }).catch(() => {});
   $("modal").addEventListener("click", (event) => { if (event.target === $("modal")) closeConnect(); });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeConnect(); });
   bridge.onProgress(onProgress);
@@ -986,6 +1027,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     }
     if (lastError) throw lastError;
+    $("app-version").textContent = t("foot.version", {v: state.catalog.version});
     if (!state.catalog.packs.some((pack) => pack.id === state.pack) && state.catalog.packs[0]) {
       state.pack = state.catalog.default_pack || state.catalog.packs[0].id;
     }

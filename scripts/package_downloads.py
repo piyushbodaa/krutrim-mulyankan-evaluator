@@ -19,6 +19,7 @@ import tarfile
 import tempfile
 import tomllib
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,20 @@ ASSETS = {
     "km-windows-x86_64.zip",
     "km-macos-aarch64.tar.gz",
     "km-macos-x86_64.tar.gz",
+    # Automatic updates: signed macOS app archives and the manifest installed apps read.
+    "Krutrim-Mulyankan-mac-arm64.app.tar.gz",
+    "Krutrim-Mulyankan-mac-x86_64.app.tar.gz",
+    "latest.json",
+}
+REPOSITORY = "piyushbodaa/krutrim-mulyankan-evaluator"
+# Release asset -> updater targets ({os}-{arch}-{bundle} first, {os}-{arch} as fallback).
+UPDATE_TARGETS = {
+    "Krutrim-Mulyankan-linux.AppImage": ("linux-x86_64", "linux-x86_64-appimage"),
+    "Krutrim-Mulyankan-linux.deb": ("linux-x86_64-deb",),
+    "Krutrim-Mulyankan-linux.rpm": ("linux-x86_64-rpm",),
+    "Krutrim-Mulyankan-windows.exe": ("windows-x86_64", "windows-x86_64-nsis"),
+    "Krutrim-Mulyankan-mac-arm64.app.tar.gz": ("darwin-aarch64", "darwin-aarch64-app"),
+    "Krutrim-Mulyankan-mac-x86_64.app.tar.gz": ("darwin-x86_64", "darwin-x86_64-app"),
 }
 ARCH_DEPENDS = (
     "cairo",
@@ -452,6 +467,18 @@ def verify_macos_transport(app: Path) -> None:
         require(security.get(key) is not True, f"macOS app must not enable broad {key}")
 
 
+def keep_update_signature(package: Path, name: str) -> None:
+    """Copy Tauri's signature for an update package when this build signs updates."""
+    if os.environ.get("KM_UPDATER_SIGNED") != "1":
+        return
+    signature = package.with_name(package.name + ".sig")
+    require(
+        signature.is_file() and signature.stat().st_size > 0,
+        f"Missing update signature for {package.name}",
+    )
+    shutil.copy2(signature, DOWNLOADS / f"{name}.sig")
+
+
 def package_desktop(target: str, platform: str) -> None:
     bundle = ROOT / "desktop/src-tauri/target" / target / "release/bundle"
     DOWNLOADS.mkdir(parents=True, exist_ok=True)
@@ -463,6 +490,7 @@ def package_desktop(target: str, platform: str) -> None:
             extracted = work / "squashfs-root"
             smoke_engine(packaged_engine(extracted))
             shutil.copy2(appimage, DOWNLOADS / "Krutrim-Mulyankan-linux.AppImage")
+            keep_update_signature(appimage, "Krutrim-Mulyankan-linux.AppImage")
             version = json.loads((ROOT / "desktop/src-tauri/tauri.conf.json").read_text())[
                 "version"
             ]
@@ -486,6 +514,7 @@ def package_desktop(target: str, platform: str) -> None:
             extract_deb(deb, work / "deb")
             verify_linux_payload(work / "deb")
             shutil.copy2(deb, DOWNLOADS / "Krutrim-Mulyankan-linux.deb")
+            keep_update_signature(deb, "Krutrim-Mulyankan-linux.deb")
             rpm = one((bundle / "rpm").glob("*.rpm"))
             metadata = run(
                 ["rpm", "-qp", "--queryformat", "%{NAME} %{VERSION} %{ARCH}", rpm],
@@ -504,6 +533,7 @@ def package_desktop(target: str, platform: str) -> None:
             run(["bsdtar", "-xf", rpm, "-C", work / "rpm"])
             verify_linux_payload(work / "rpm")
             shutil.copy2(rpm, DOWNLOADS / "Krutrim-Mulyankan-linux.rpm")
+            keep_update_signature(rpm, "Krutrim-Mulyankan-linux.rpm")
         elif platform.startswith("windows"):
             installer = one((bundle / "nsis").glob("*.exe"))
             # NSIS consumes /D through the end of the raw command line, without
@@ -513,6 +543,7 @@ def package_desktop(target: str, platform: str) -> None:
             run(f"{command} /D={installed}")
             smoke_engine(packaged_engine(installed))
             shutil.copy2(installer, DOWNLOADS / "Krutrim-Mulyankan-windows.exe")
+            keep_update_signature(installer, "Krutrim-Mulyankan-windows.exe")
         else:
             dmg = one((bundle / "dmg").glob("*.dmg"))
             mount = work / "mount"
@@ -526,6 +557,11 @@ def package_desktop(target: str, platform: str) -> None:
                 run(["hdiutil", "detach", mount])
             arch = "arm64" if platform == "macos-aarch64" else "x86_64"
             shutil.copy2(dmg, DOWNLOADS / f"Krutrim-Mulyankan-mac-{arch}.dmg")
+            if os.environ.get("KM_UPDATER_SIGNED") == "1":
+                archive = one((bundle / "macos").glob("*.app.tar.gz"))
+                name = f"Krutrim-Mulyankan-mac-{arch}.app.tar.gz"
+                shutil.copy2(archive, DOWNLOADS / name)
+                keep_update_signature(archive, name)
     print(f"Desktop packages verified: {platform}")
 
 
@@ -544,6 +580,34 @@ def check_versions(version: str) -> None:
             actual = actual[key]
         require(actual == version, f"{filename}: {actual} does not match tag {version}")
     print(f"All package versions match {version}")
+
+
+def update_manifest(directory: Path, version: str, tag: str) -> None:
+    """Write latest.json for installed apps from the per-package signatures, then
+    remove the loose .sig files so the release holds only the documented assets."""
+    platforms = {}
+    for name, targets in UPDATE_TARGETS.items():
+        package = directory / name
+        signature = directory / f"{name}.sig"
+        require(package.is_file(), f"Missing update package: {name}")
+        require(signature.is_file(), f"Missing update signature: {name}.sig")
+        entry = {
+            "signature": signature.read_text(encoding="utf-8").strip(),
+            "url": f"https://github.com/{REPOSITORY}/releases/download/{tag}/{name}",
+        }
+        require(entry["signature"], f"Empty update signature: {name}.sig")
+        for target in targets:
+            platforms[target] = entry
+    for signature in directory.glob("*.sig"):
+        signature.unlink()
+    manifest = {
+        "version": version,
+        "notes": f"Krutrim Mulyankan {version}",
+        "pub_date": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "platforms": platforms,
+    }
+    (directory / "latest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote latest.json for {version} with {len(platforms)} update targets")
 
 
 def verify_release(directory: Path, version: str) -> None:
@@ -642,6 +706,10 @@ def main() -> None:
     command = commands.add_parser("guard-release-tag")
     command.add_argument("--tag", required=True)
     command.add_argument("--commit", required=True)
+    command = commands.add_parser("update-manifest")
+    command.add_argument("--directory", type=Path, required=True)
+    command.add_argument("--version", required=True)
+    command.add_argument("--tag", required=True)
     command = commands.add_parser("verify-release")
     command.add_argument("--directory", type=Path, required=True)
     command.add_argument("--version", required=True)

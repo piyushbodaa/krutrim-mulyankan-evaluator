@@ -1,6 +1,6 @@
 [package]
 name = "krutrim-mulyankan-desktop"
-version = "0.4.0"
+version = "0.4.1"
 description = "Krutrim Mulyankan desktop shell"
 authors = ["Krutrim Mulyankan contributors"]
 edition = "2021"
@@ -15,6 +15,7 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
 
 # keyring has no default credential store: without a platform feature it
 # silently uses its mock store and keys are never persisted (keyring 3.6

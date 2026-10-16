@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 from enum import StrEnum
 from pathlib import Path
@@ -13,6 +14,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from kritrim_mulyankan import selfupdate
 from kritrim_mulyankan.engine import MAX_REPEATS, PreflightError, preflight, run_suite
 from kritrim_mulyankan.export import write_export
 from kritrim_mulyankan.importer import import_suite
@@ -59,11 +61,58 @@ def _apply_console_width() -> None:
         err.size = (width, height)
 
 
+def _show_version(value: bool) -> None:
+    if value:
+        console.print(f"km {selfupdate.current()}")
+        raise typer.Exit()
+
+
 @app.callback()
-def main() -> None:
+def main(
+    ctx: typer.Context,
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version", "-V", help="Show the km version.", callback=_show_version, is_eager=True
+        ),
+    ] = False,
+) -> None:
     # Secrets come from the environment or a local .env; real env vars win.
     load_dotenv(find_dotenv(usecwd=True), override=False)
     _apply_console_width()
+    # Once a day, after the command itself, km updates itself (see selfupdate.py).
+    if ctx.invoked_subcommand not in ("update", "version"):
+        atexit.register(selfupdate.auto)
+
+
+@app.command("version")
+def version_command() -> None:
+    """Show the installed km version."""
+    console.print(f"km {selfupdate.current()}")
+
+
+@app.command("update")
+def update_command(
+    check: Annotated[bool, typer.Option("--check", help="Only report whether one exists.")] = False,
+) -> None:
+    """Update km now. It also updates itself once a day; KM_NO_AUTO_UPDATE=1 turns that off."""
+    try:
+        if check:
+            latest = selfupdate.latest_version(timeout=15)
+            if selfupdate.is_newer(latest, selfupdate.current()):
+                console.print(f"km {latest} is available (you have {selfupdate.current()}).")
+            else:
+                console.print(f"km {selfupdate.current()} is up to date.")
+            return
+        console.print("Checking for a new km…")
+        before = selfupdate.current()
+        new = selfupdate.update_now(timeout=15)
+    except selfupdate.UpdateError as error:
+        _fail(str(error))
+    if new:
+        console.print(f"km is now {new} (was {before}).")
+    else:
+        console.print(f"km {selfupdate.current()} is up to date.")
 
 
 def _fail(msg: str) -> NoReturn:

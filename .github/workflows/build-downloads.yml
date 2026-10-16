@@ -3,6 +3,16 @@ name: Build downloads
 
 on:
   workflow_call:
+    inputs:
+      sign-updates:
+        description: Fail unless update packages are signed (releases).
+        type: boolean
+        default: false
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
@@ -29,12 +39,12 @@ jobs:
             os: macos-15
             cli-target: aarch64-apple-darwin
             desktop-target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
           - platform: macos-x86_64
             os: macos-15-intel
             cli-target: x86_64-apple-darwin
             desktop-target: x86_64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -75,9 +85,22 @@ jobs:
         run: python scripts/package_downloads.py smoke-engine --root desktop/src-tauri/resources/engine
       - name: Build the desktop installer
         working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          REQUIRE_SIGNED_UPDATES: ${{ inputs.sign-updates }}
         run: |
           npm ci
-          npm run build -- --ci --target "${{ matrix.desktop-target }}" --bundles "${{ matrix.bundles }}" -- --locked
+          # Installed apps only accept update packages signed with the updater key.
+          updater=()
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            updater=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+            echo "KM_UPDATER_SIGNED=1" >> "$GITHUB_ENV"
+          elif [ "$REQUIRE_SIGNED_UPDATES" = "true" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set, so update packages cannot be signed."
+            exit 1
+          fi
+          npm run build -- --ci --target "${{ matrix.desktop-target }}" --bundles "${{ matrix.bundles }}" "${updater[@]}" -- --locked
       - name: Verify the packaged engine and prepare downloads
         run: python scripts/package_downloads.py package-desktop --target "${{ matrix.desktop-target }}" --platform "${{ matrix.platform }}"
       - name: Build and verify the native Arch package

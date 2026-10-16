@@ -108,14 +108,14 @@ def test_native_matrix_uses_matching_architecture_and_installer_formats():
             "macos-15",
             "aarch64-apple-darwin",
             "aarch64-apple-darwin",
-            "dmg",
+            "app,dmg",
         ),
         (
             "macos-x86_64",
             "macos-15-intel",
             "x86_64-apple-darwin",
             "x86_64-apple-darwin",
-            "dmg",
+            "app,dmg",
         ),
     }
 
@@ -135,13 +135,16 @@ def test_release_assets_match_the_download_contract():
         "km-windows-x86_64.zip",
         "km-macos-aarch64.tar.gz",
         "km-macos-x86_64.tar.gz",
+        "Krutrim-Mulyankan-mac-arm64.app.tar.gz",
+        "Krutrim-Mulyankan-mac-x86_64.app.tar.gz",
+        "latest.json",
     }
     assert PACKAGING["ASSETS"] == expected
     release = yaml.safe_load(_read(".github/workflows/release.yml"))
     steps = release["jobs"]["publish"]["steps"]
     publish = next(step for step in steps if step.get("uses", "").startswith("softprops/"))
     files = {Path(path).name for path in publish["with"]["files"].splitlines()}
-    assert files == expected | {"kritrim_mulyankan-*.whl", "SHA256SUMS"}
+    assert files == expected | {"kritrim_mulyankan-*.whl", "SHA256SUMS", "SHA256SUMS.sig"}
 
 
 def test_arch_payload_has_stable_metadata_and_keeps_executable_bits(tmp_path):
@@ -360,3 +363,56 @@ def test_publish_guard_rejects_tag_moved_during_the_build(monkeypatch):
     monkeypatch.setitem(guard.__globals__, "remote_tag_commit", lambda tag: "b" * 40)
     with pytest.raises(RuntimeError, match="Refusing to replace"):
         guard("v1.2.3", "a" * 40)
+
+
+def test_update_manifest_points_each_install_type_at_its_signed_package(tmp_path):
+    for name in PACKAGING["UPDATE_TARGETS"]:
+        (tmp_path / name).write_bytes(b"package")
+        (tmp_path / f"{name}.sig").write_text(f"sig-of-{name}\n")
+    PACKAGING["update_manifest"](tmp_path, "1.2.3", "v1.2.3")
+    manifest = json.loads((tmp_path / "latest.json").read_text())
+    assert manifest["version"] == "1.2.3"
+    assert manifest["pub_date"].endswith("Z")
+    base = "https://github.com/piyushbodaa/krutrim-mulyankan-evaluator/releases/download/v1.2.3/"
+    platforms = manifest["platforms"]
+    assert platforms["linux-x86_64-appimage"] == {
+        "signature": "sig-of-Krutrim-Mulyankan-linux.AppImage",
+        "url": base + "Krutrim-Mulyankan-linux.AppImage",
+    }
+    assert platforms["linux-x86_64"] == platforms["linux-x86_64-appimage"]
+    assert platforms["linux-x86_64-deb"]["url"] == base + "Krutrim-Mulyankan-linux.deb"
+    assert platforms["windows-x86_64-nsis"]["url"] == base + "Krutrim-Mulyankan-windows.exe"
+    assert platforms["darwin-aarch64"]["url"] == base + "Krutrim-Mulyankan-mac-arm64.app.tar.gz"
+    assert platforms["darwin-x86_64-app"]["url"] == base + "Krutrim-Mulyankan-mac-x86_64.app.tar.gz"
+    assert not list(tmp_path.glob("*.sig")), "loose signatures must not be published"
+
+
+def test_update_manifest_refuses_an_unsigned_package(tmp_path):
+    for name in PACKAGING["UPDATE_TARGETS"]:
+        (tmp_path / name).write_bytes(b"package")
+        (tmp_path / f"{name}.sig").write_text("sig\n")
+    (tmp_path / "Krutrim-Mulyankan-windows.exe.sig").unlink()
+    with pytest.raises(RuntimeError, match="signature"):
+        PACKAGING["update_manifest"](tmp_path, "1.2.3", "v1.2.3")
+
+
+def test_releases_sign_updates_and_the_app_trusts_that_key():
+    downloads = yaml.safe_load(_read(".github/workflows/build-downloads.yml"))
+    trigger = downloads.get("on", downloads.get(True))["workflow_call"]
+    assert set(trigger["secrets"]) == {
+        "TAURI_SIGNING_PRIVATE_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+    }
+    release = yaml.safe_load(_read(".github/workflows/release.yml"))
+    assert release["jobs"]["downloads"]["with"] == {"sign-updates": True}
+    assert release["jobs"]["downloads"]["secrets"] == "inherit"
+    steps = "\n".join(step.get("run", "") for step in release["jobs"]["publish"]["steps"])
+    assert "update-manifest" in steps and "signer sign release/SHA256SUMS" in steps
+    conf = json.loads(_read("desktop/src-tauri/tauri.conf.json"))
+    updater = conf["plugins"]["updater"]
+    assert updater["endpoints"] == [
+        "https://github.com/piyushbodaa/krutrim-mulyankan-evaluator/releases/latest/download/latest.json"
+    ]
+    assert updater["pubkey"]
+    # Signing is switched on per build, so builds without the key still work.
+    assert "createUpdaterArtifacts" not in conf["bundle"]

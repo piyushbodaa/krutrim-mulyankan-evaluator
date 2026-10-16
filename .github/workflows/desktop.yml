@@ -36,3 +36,4 @@ jobs:
     name: CLI and desktop downloads
     needs: test
     uses: ./.github/workflows/build-downloads.yml
+    secrets: inherit

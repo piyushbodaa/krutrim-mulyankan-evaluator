@@ -37,6 +37,13 @@
   <p id="theme-status" class="sr-only" role="status" aria-live="polite"></p>
 
   <main id="main" class="main">
+    <div id="update-banner" class="update-banner" role="status" hidden>
+      <span id="update-text"></span>
+      <span class="update-actions">
+        <button class="primary" id="update-go" type="button"></button>
+        <button class="link" id="update-later" type="button" data-i18n="upd.later">Later</button>
+      </span>
+    </div>
     <div id="notice" class="notice" role="alert" hidden></div>
 
     <!-- Home -->
@@ -263,7 +270,7 @@
   </div>
 
   <footer class="main foot">
-    <p data-i18n="foot.about">Your questions and keys stay on this computer.</p>
+    <p><span data-i18n="foot.about">Your questions and keys stay on this computer.</span> <span id="app-version"></span></p>
     <p class="honesty" lang="en">Unvalidated pilot · Not a ranking · Too close to call means the gap could be chance, not that they are equal. · <span lang="hi">कृत्रिम मूल्यांकन</span></p>
   </footer>
   <script src="i18n.js"></script>

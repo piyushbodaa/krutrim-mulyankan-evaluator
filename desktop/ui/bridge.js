@@ -108,8 +108,20 @@ const bridge = (() => {
     window.open(url, "_blank", "noopener");
   }
 
+  /* Automatic updates live in the window shell; the loopback preview has none. */
+  const updates = {
+    async status() {
+      return isTauri() ? window.__TAURI__.core.invoke("update_status") : {state: "idle"};
+    },
+    apply() { return window.__TAURI__.core.invoke("update_apply"); },
+    restart() { return window.__TAURI__.core.invoke("update_restart"); },
+    async onStatus(fn) {
+      if (isTauri()) await window.__TAURI__.event.listen("update://status", (event) => fn(event.payload || {}));
+    },
+  };
+
   return {
-    init, call, isTauri, saveKey, saveText, openExternal, dispatch,
+    init, call, isTauri, saveKey, saveText, openExternal, dispatch, updates,
     onProgress(fn) { progressListeners.add(fn); },
   };
 })();

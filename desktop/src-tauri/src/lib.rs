@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
+mod updates;
+
 use keyring::Entry;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -300,17 +302,23 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Updates::default())
         .setup(|app| {
             let (engine, stdout) = prepare(app.handle())?;
             app.manage(engine);
             spawn_reader(app.handle().clone(), stdout);
+            updates::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             engine_call,
             keychain_set,
             keychain_status,
-            save_text
+            save_text,
+            updates::update_status,
+            updates::update_apply,
+            updates::update_restart
         ])
         .run(tauri::generate_context!())
         .expect("error while running Krutrim Mulyankan");
