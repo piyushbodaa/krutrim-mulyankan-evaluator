@@ -702,20 +702,35 @@ function renderReportCard() {
   const verdicts = (report.verdicts || []).filter((v) => v.metric === "accuracy");
   if (verdicts.length) {
     const list = el("ul", {class: "verdicts"});
-    for (const verdict of verdicts) {
-      const a = prettyName(verdict.runner_a);
-      const b = prettyName(verdict.runner_b);
-      let text;
-      if (verdict.a_better === 0 && verdict.b_better === 0) text = t("res.same", {a, b});
-      else if (verdict.verdict === "clearly_different") {
-        const winnerIsA = verdict.favours === verdict.runner_a;
-        text = t("res.clear", {a: winnerIsA ? a : b, b: winnerIsA ? b : a});
-      } else text = t("res.close", {a, b});
-      list.append(el("li", {text}));
-    }
+    verdicts.forEach((verdict, index) => list.append(verdictRow(verdict, index)));
     panel.append(el("h2", {class: "group-title", text: t("res.compare")}), list);
   }
   panel.append(el("p", {class: "honest", text: t("res.honest")}));
+}
+
+/* Two chips: an outlined "Too close to call" and a filled "Clearly
+   different". Hovering or pressing the outlined one says what it means. */
+function verdictRow(verdict, index) {
+  const a = prettyName(verdict.runner_a);
+  const b = prettyName(verdict.runner_b);
+  if (verdict.a_better === 0 && verdict.b_better === 0) return el("li", {class: "verdict", text: t("res.same", {a, b})});
+  if (verdict.verdict === "clearly_different") {
+    const winnerIsA = verdict.favours === verdict.runner_a;
+    return el("li", {class: "verdict"},
+      el("span", {class: "chip filled", text: t("res.chipClear")}),
+      el("span", {text: t("res.clear", {a: winnerIsA ? a : b, b: winnerIsA ? b : a})}));
+  }
+  const why = el("p", {class: "why", id: "why-" + index, text: t("res.closeWhy"), hidden: true});
+  let pinned = false;
+  const show = (open) => {
+    why.hidden = !open;
+    chip.setAttribute("aria-expanded", String(open));
+  };
+  const chip = el("button", {type: "button", class: "chip", "aria-expanded": "false", "aria-controls": why.id, text: t("res.chipClose"),
+    onclick: () => { pinned = !pinned; show(pinned); },
+    onmouseenter: () => show(true),
+    onmouseleave: () => show(pinned)});
+  return el("li", {class: "verdict"}, chip, el("span", {text: t("res.closePair", {a, b})}), why);
 }
 
 function selectTab(name) {
