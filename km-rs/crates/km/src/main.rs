@@ -917,7 +917,7 @@ impl LiveProgress {
     fn new(runners: &[Runner], attempts_per_runner: usize) -> LiveProgress {
         let multi = indicatif::MultiProgress::new();
         let bar_style = if color_enabled() {
-            "{spinner:.208} {msg:<28} [{bar:24.208/dim}] {pos}/{len}"
+            "{spinner:.white} {msg:<28} [{bar:24.white/dim}] {pos}/{len}"
         } else {
             "{spinner} {msg:<28} [{bar:24}] {pos}/{len}"
         };
@@ -1008,13 +1008,13 @@ impl LiveProgress {
             "error".to_string()
         } else if record.passed == Some(true) {
             if color_enabled() {
-                "\u{1b}[32m✓\u{1b}[0m".into()
+                "\u{1b}[1m✓\u{1b}[0m".into()
             } else {
                 "✓".into()
             }
         } else if record.passed == Some(false) {
             if color_enabled() {
-                "\u{1b}[31m✗\u{1b}[0m".into()
+                "\u{1b}[2m✗\u{1b}[0m".into()
             } else {
                 "✗".into()
             }
@@ -1048,10 +1048,11 @@ pub fn render_table(
     let headers: Vec<String> = headers.iter().map(|h| h.as_ref().to_string()).collect();
     let rendered = render_table_owned(title, &headers, rows);
     if color_enabled() {
-        // Post-colour the verdict marks; widths were computed on plain text.
+        // Monochrome verdict marks (bold pass, dim fail); widths were
+        // computed on plain text.
         rendered
-            .replace('✓', "\u{1b}[32m✓\u{1b}[0m")
-            .replace('✗', "\u{1b}[31m✗\u{1b}[0m")
+            .replace('✓', "\u{1b}[1m✓\u{1b}[0m")
+            .replace('✗', "\u{1b}[2m✗\u{1b}[0m")
     } else {
         rendered
     }

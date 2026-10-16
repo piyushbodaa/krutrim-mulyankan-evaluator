@@ -12,6 +12,7 @@ from dotenv import find_dotenv, load_dotenv
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from typer import rich_utils as typer_styles
 
 from kritrim_mulyankan.engine import MAX_REPEATS, PreflightError, preflight, run_suite
 from kritrim_mulyankan.export import write_export
@@ -39,8 +40,14 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
-console = Console()
-err = Console(stderr=True)
+# Monochrome, like the site: bold for what matters, dim for the rest. No
+# auto-highlighting of numbers and paths, and no colours in --help either.
+console = Console(highlight=False)
+err = Console(stderr=True, highlight=False)
+_HUES = ("red", "green", "yellow", "blue", "magenta", "cyan")
+for _name, _style in list(vars(typer_styles).items()):
+    if _name.startswith("STYLE_") and isinstance(_style, str) and any(h in _style for h in _HUES):
+        setattr(typer_styles, _name, "dim" if "dim" in _style else "bold")
 
 
 def _apply_console_width() -> None:
@@ -67,7 +74,7 @@ def main() -> None:
 
 
 def _fail(msg: str) -> NoReturn:
-    err.print(f"[red]error:[/red] {escape(msg)}")
+    err.print(f"[bold]error:[/bold] {escape(msg)}")
     raise typer.Exit(1)
 
 
@@ -220,7 +227,7 @@ def run(
         unknown = any(e.cost_usd is None for e in mine)
         usd = "unknown" if unknown else f"${known:.4f}"
         inr = "unknown" if unknown else f"₹{known * settings.usd_to_inr:.2f}"
-        status = "[red]not ready[/red]" if runner_problems[r.name] or unknown else "ready"
+        status = "[bold]not ready[/bold]" if runner_problems[r.name] or unknown else "ready"
         table.add_row(escape(r.name), str(len(mine) * repeats), usd, inr, status)
     console.print(table)
     worst_inr = check.worst_case_usd * settings.usd_to_inr
@@ -229,9 +236,9 @@ def run(
         "Worst case = prompt bytes in, max_output_tokens out."
     )
     for warning in check.warnings:
-        err.print(f"[yellow]warning:[/yellow] {escape(warning)}")
+        err.print(f"[bold]warning:[/bold] {escape(warning)}")
     for problem in check.problems:
-        err.print(f"[red]problem:[/red] {escape(problem)}")
+        err.print(f"[bold]problem:[/bold] {escape(problem)}")
     if dry_run:
         verdict = "a real run would start" if check.ok else "a real run would be refused"
         console.print(f"Dry run: nothing was called or spent; {verdict}.")
@@ -268,7 +275,7 @@ def run(
         _print_leaderboard(store, summary.run_id)
 
     if summary.status == "budget_exceeded":
-        err.print("[yellow]warning:[/yellow] budget cap reached; some attempts were skipped.")
+        err.print("[bold]warning:[/bold] budget cap reached; some attempts were skipped.")
     console.print(f"Run [bold]{summary.run_id}[/bold] · raw outputs in {summary.run_dir}/")
     for p in paths:
         console.print(f"Report: {p}")
@@ -349,12 +356,12 @@ def report(
 
 def _mark(r: ResultRecord) -> str:
     if r.status == "error":
-        return "[red]![/red]"
+        return "[bold]![/bold]"
     if r.status == "skipped":
         return "-"
     if r.passed is None:
         return "·"  # graded later (e.g. awaiting a judge)
-    return "[green]✓[/green]" if r.passed else "[red]✗[/red]"
+    return "[bold]✓[/bold]" if r.passed else "[dim]✗[/dim]"
 
 
 def _write_reports(store: Store, run_id: str, out_dir: Path, fmt: str) -> list[Path]:
