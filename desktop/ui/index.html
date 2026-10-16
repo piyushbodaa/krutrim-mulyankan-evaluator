@@ -203,21 +203,14 @@
         <div id="side-bar" class="prompt-bar">
           <p class="prompt-text" id="side-bar-text"></p>
           <div class="bar-actions">
-            <div class="seg" id="side-view" role="group" aria-label="View">
-              <button type="button" data-view="answer" aria-pressed="true" data-i18n="side.answers">Answers</button>
-              <button type="button" data-view="metrics" aria-pressed="false" data-i18n="side.allMetrics">All metrics</button>
+            <div class="seg icon-seg" id="side-view" role="group" aria-label="View">
+              <button type="button" data-view="answer" aria-pressed="true" title="Answers" aria-label="Answers" data-i18n-title="side.answers"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9"/></svg></button>
+              <button type="button" data-view="metrics" aria-pressed="false" title="All metrics" aria-label="All metrics" data-i18n-title="side.allMetrics"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11M12 20V4M19 20v-6"/></svg></button>
             </div>
-            <button class="secondary" id="side-stop" type="button" data-i18n="side.stop">Stop</button>
-            <button class="secondary" id="side-save" type="button" data-i18n="side.save">Save</button>
+            <button class="icon-btn big" id="side-stop" type="button" title="Stop" aria-label="Stop" data-i18n-title="side.stop"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg></button>
+            <button class="icon-btn big" id="side-save" type="button" title="Save" aria-label="Save" data-i18n-title="side.save"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
             <button class="primary" id="side-new" type="button" data-i18n="side.new">New question</button>
           </div>
-        </div>
-        <div class="legend" aria-hidden="true">
-          <span><i class="tseg send"></i><span data-i18n="side.lSend">Sending</span></span>
-          <span><i class="tseg wait"></i><span data-i18n="side.lWait">Waiting</span></span>
-          <span><i class="tseg think"></i><span data-i18n="side.lThink">Thinking</span></span>
-          <span><i class="tseg write"></i><span data-i18n="side.lWrite">Writing</span></span>
-          <span class="scale" id="side-scale"></span>
         </div>
         <div id="side-stage" class="stage"></div>
         <p id="side-summary" class="side-summary" hidden></p>

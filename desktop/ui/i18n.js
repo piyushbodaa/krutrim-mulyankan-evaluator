@@ -289,9 +289,15 @@ const I18N = {
     "side.mFinish": "Why it stopped",
     "side.mStatus": "HTTP status",
     "side.mGeneration": "Generation id",
-    "side.winStart": "Quickest start",
-    "side.winFinish": "Quickest finish",
-    "side.winWriter": "Fastest writer",
+    "side.tipStart": "Starts answering after",
+    "side.tipSpeed": "Writing speed, in word pieces a second",
+    "side.tipTime": "Total time",
+    "side.tipCost": "Cost of this answer, in rupees",
+    "side.tipTrack": "Race: dotted is waiting, grey is thinking, black is writing",
+    "side.tipTotal": "Spent in total",
+    "side.winStart": "Started first",
+    "side.winFinish": "Finished first",
+    "side.winWriter": "Wrote fastest",
     "side.winCheap": "Cheapest",
     "side.spent": "{money} spent in total",
     "side.saved": "Saved.",
@@ -583,9 +589,15 @@ const I18N = {
     "side.mFinish": "क्यों रुका",
     "side.mStatus": "HTTP स्टेटस",
     "side.mGeneration": "जनरेशन आईडी",
-    "side.winStart": "सबसे जल्दी शुरू",
-    "side.winFinish": "सबसे जल्दी पूरा",
-    "side.winWriter": "सबसे तेज़ लेखक",
+    "side.tipStart": "इतनी देर बाद जवाब शुरू",
+    "side.tipSpeed": "लिखने की रफ़्तार, शब्द-टुकड़े प्रति सेकंड",
+    "side.tipTime": "कुल समय",
+    "side.tipCost": "इस जवाब का खर्च, रुपये में",
+    "side.tipTrack": "दौड़: बिंदु इंतज़ार, धूसर सोच, काला लिखना",
+    "side.tipTotal": "कुल खर्च",
+    "side.winStart": "सबसे पहले शुरू",
+    "side.winFinish": "सबसे पहले पूरा",
+    "side.winWriter": "सबसे तेज़ लिखा",
     "side.winCheap": "सबसे सस्ता",
     "side.spent": "कुल {money} खर्च",
     "side.saved": "सेव हुआ।",
@@ -667,6 +679,10 @@ function applyI18n() {
   for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
   for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
     el.placeholder = t(el.dataset.i18nPlaceholder);
+  }
+  for (const el of document.querySelectorAll("[data-i18n-title]")) {
+    el.title = t(el.dataset.i18nTitle);
+    el.setAttribute("aria-label", el.title);
   }
   for (const button of document.querySelectorAll("[data-lang]")) {
     button.setAttribute("aria-pressed", String(button.dataset.lang === kmLang));

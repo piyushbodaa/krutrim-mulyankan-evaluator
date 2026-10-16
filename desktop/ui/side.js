@@ -9,6 +9,22 @@ const sideBySide = (() => {
   // A typical question and reply, for "about ₹x a reply" in the picker.
   const TYPICAL = {input: 200, output: 600};
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Symbols over words: each idea has one icon, and the words live in tooltips.
+  const ICON = {
+    start: '<path d="M8 5.5v13l11-6.5z"/>',
+    speed: '<path d="M13 3L5 14h6l-1 7 8-11h-6z"/>',
+    time: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M10 2h4"/>',
+    flag: '<path d="M5 21V4M5 4h11l-2.5 4L16 12H5"/>',
+    done: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 3 5-6"/>',
+    error: '<path d="M12 3.5l9 16H3z"/><path d="M12 10v4M12 17h.01"/>',
+    stopped: '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/>',
+    thinking: '<path d="M7.5 16.5a4 4 0 0 1-.4-7.97A5 5 0 0 1 16.6 8a3.5 3.5 0 1 1 .4 7H7.5z"/><circle cx="6" cy="20" r="1"/>',
+    details: '<path d="M5 20V11M12 20V4M19 20v-6"/>',
+    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+    total: '<ellipse cx="12" cy="6.5" rx="7" ry="2.8"/><path d="M5 6.5v5.5c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V6.5M5 12v5.5c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V12"/>',
+  };
+  const icon = (name, cls = "icon") => svg(ICON[name], cls);
+
   const S = {
     status: null,
     models: [],
@@ -309,42 +325,42 @@ const sideBySide = (() => {
     const name = splitName(m);
     const pane = {id, slot, m, text: "", thinking: "", connected: null, firstThinking: null, firstAnswer: null,
       done: false, metrics: null, server: null, error: null, dirty: true, view: S.view, follow: true};
-    const state = el("span", {class: "pane-state"}, el("i", {class: "pulse"}), el("span", {class: "pane-state-text", text: t("side.sending")}));
-    const stat = (key) => el("div", {class: "stat"}, el("span", {class: "stat-label", text: t(key)}), el("span", {class: "stat-value", text: "—"}));
-    const context = el("div", {class: "stat stat-context"},
-      el("span", {class: "stat-label", text: t("side.contextStat")}),
-      el("span", {class: "stat-value", text: "—"}),
-      el("span", {class: "ctx-bar"}, el("span", {class: "ctx-fill"})));
-    const stats = el("div", {class: "pane-stats"}, stat("side.firstToken"), stat("side.speed"), stat("side.time"), stat("side.cost"), context);
-    const track = el("div", {class: "track", "aria-hidden": "true"},
-      el("span", {class: "tseg send"}), el("span", {class: "tseg wait"}), el("span", {class: "tseg think"}), el("span", {class: "tseg write"}));
+    const state = el("span", {class: "pane-state busy", role: "img"}, el("i", {class: "pulse"}));
+    // Four numbers, each behind a symbol: starts, speed, time, cost.
+    const stat = (symbol, tip) => el("div", {class: "stat", title: t(tip)},
+      symbol ? icon(symbol, "icon stat-icon") : el("span", {class: "stat-icon rupee", text: "₹"}),
+      el("span", {class: "stat-value", text: "…"}));
+    const stats = el("div", {class: "pane-stats"},
+      stat("start", "side.tipStart"), stat("speed", "side.tipSpeed"), stat("time", "side.tipTime"), stat(null, "side.tipCost"));
+    // A race bar on one shared time scale, with a flag at the finish.
+    const flag = el("span", {class: "finish", hidden: true}, icon("flag"));
+    const track = el("div", {class: "track", title: t("side.tipTrack")},
+      el("span", {class: "tseg send"}), el("span", {class: "tseg wait"}), el("span", {class: "tseg think"}), el("span", {class: "tseg write"}), flag);
     const thinking = el("details", {class: "thinking", hidden: true},
-      el("summary", {text: t("side.thinking")}), el("div", {class: "thinking-text"}));
+      el("summary", {}, icon("thinking"), el("span", {text: t("side.thinking")})), el("div", {class: "thinking-text"}));
     const answer = el("div", {class: "answer"});
     const body = el("div", {class: "pane-body"}, thinking, answer);
     body.addEventListener("scroll", () => {
       pane.follow = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
     });
     const metrics = el("div", {class: "pane-metrics", hidden: true});
-    const icon = (paths) => svg(paths, "icon");
     const toggle = el("button", {type: "button", class: "icon-btn", "aria-pressed": "false", title: t("side.metrics"), "aria-label": t("side.metrics"),
-      onclick: () => setPaneView(pane, pane.view === "metrics" ? "answer" : "metrics")},
-      icon('<path d="M5 20V11M12 20V4M19 20v-6"/>'));
+      onclick: () => setPaneView(pane, pane.view === "metrics" ? "answer" : "metrics")}, icon("details"));
     const copy = el("button", {type: "button", class: "icon-btn", title: t("side.copy"), "aria-label": t("side.copy"), onclick: async () => {
       try {
         await navigator.clipboard.writeText(pane.text);
         copy.classList.add("done");
         setTimeout(() => copy.classList.remove("done"), 1200);
       } catch { /* Selecting the text still works. */ }
-    }}, icon('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>'));
+    }}, icon("copy"));
     const node = el("article", {class: "pane", "data-slot": String(slot)},
       el("div", {class: "pane-inner"},
         el("header", {class: "pane-head"},
-          el("div", {class: "pane-name"}, el("strong", {text: name.short}),
-            el("span", {class: "pane-sub"}, el("span", {text: name.maker}), el("span", {class: "pane-badges"}))),
-          state, toggle, copy),
+          el("div", {class: "pane-name"}, el("strong", {text: name.short, title: m.id}), el("span", {class: "pane-sub", text: name.maker})),
+          el("span", {class: "pane-badges"}), state, toggle, copy),
         stats, track, body, metrics));
-    Object.assign(pane, {node, state, stats, track, context, thinkingBox: thinking, answer, body, metricsBox: metrics, toggle});
+    Object.assign(pane, {node, state, stats, track, flag, thinkingBox: thinking, answer, body, metricsBox: metrics, toggle});
+    setState(pane, "sending");
     return pane;
   }
 
@@ -480,7 +496,7 @@ const sideBySide = (() => {
   function stop() {
     if (!S.ask || !S.ask.running) return;
     $("side-stop").disabled = true;
-    for (const pane of S.ask.panes) if (!pane.done) setState(pane, t("side.stopping"), "busy");
+    for (const pane of S.ask.panes) if (!pane.done) setState(pane, "stopping");
     bridge.call("live_stop", {ask_id: S.ask.id})
       .catch((error) => setStatus(error.message))
       .finally(() => { $("side-stop").disabled = false; });
@@ -492,20 +508,20 @@ const sideBySide = (() => {
     if (!event || event.kind !== "live" || !S.ask || event.ask_id !== S.ask.id) return;
     const pane = S.ask.panes[event.slot];
     if (!pane) return;
-    if (event.type === "start") setState(pane, t("side.sending"), "busy");
+    if (event.type === "start") setState(pane, "sending");
     else if (event.type === "connected") {
       pane.connected = event.at;
-      setState(pane, t("side.waiting"), "busy");
+      setState(pane, "waiting");
     } else if (event.type === "first") {
       if (event.thinking) {
         pane.firstThinking = event.at;
         pane.thinkingBox.hidden = false;
         pane.thinkingBox.open = true;
-        setState(pane, t("side.thinkingState"), "busy");
+        setState(pane, "thinking");
       } else {
         pane.firstAnswer = event.at;
         pane.thinkingBox.open = false;
-        setState(pane, t("side.writing"), "busy");
+        setState(pane, "writing");
       }
     } else if (event.type === "text") {
       if (event.thinking) pane.thinking += event.text;
@@ -519,9 +535,17 @@ const sideBySide = (() => {
     }
   }
 
-  function setState(pane, text, kind) {
-    pane.state.className = "pane-state " + (kind || "");
-    pane.state.querySelector(".pane-state-text").textContent = text;
+  const STATES = {
+    sending: ["side.sending", "busy", null], waiting: ["side.waiting", "busy", null], stopping: ["side.stopping", "busy", null],
+    thinking: ["side.thinkingState", "busy think", "thinking"], writing: ["side.writing", "busy", null],
+    done: ["side.done", "ok", "done"], error: ["side.error", "bad", "error"], stopped: ["side.stopped", "", "stopped"],
+  };
+  function setState(pane, kind) {
+    const [key, cls, symbol] = STATES[kind];
+    pane.state.className = "pane-state " + cls;
+    pane.state.title = t(key);
+    pane.state.setAttribute("aria-label", t(key));
+    pane.state.replaceChildren(symbol ? icon(symbol) : el("i", {class: "pulse"}));
   }
 
   function finishPane(pane, metrics) {
@@ -533,9 +557,7 @@ const sideBySide = (() => {
     if (metrics.first_answer_s !== undefined && pane.firstAnswer === null) pane.firstAnswer = metrics.first_answer_s;
     if (metrics.connected_s !== undefined && pane.connected === null) pane.connected = metrics.connected_s;
     pane.dirty = true;
-    if (pane.error) setState(pane, t("side.error"), "bad");
-    else if (metrics.stopped) setState(pane, t("side.stopped"), "");
-    else setState(pane, t("side.done"), "ok");
+    setState(pane, pane.error ? "error" : metrics.stopped ? "stopped" : "done");
     paint(pane, performance.now());
     // Finished answers read from the top, unless the reader scrolled.
     if (pane.follow && pane.body.scrollTo) pane.body.scrollTo({top: 0, behavior: reduceMotion ? "auto" : "smooth"});
@@ -577,9 +599,7 @@ const sideBySide = (() => {
   function timeScale(now) {
     const longest = Math.max(1, ...S.ask.panes.map((p) => paneTime(p, now)));
     const steps = [1, 2, 3, 5, 8, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600];
-    const scale = steps.find((s) => s >= longest * 1.08) || Math.ceil(longest / 60) * 60;
-    $("side-scale").textContent = t("side.scale", {s: secs(scale)});
-    return scale;
+    return steps.find((s) => s >= longest * 1.08) || Math.ceil(longest / 60) * 60;
   }
 
   function paintTrack(pane, now, scale) {
@@ -598,6 +618,8 @@ const sideBySide = (() => {
     else place(think, 0, 0);
     if (pane.firstAnswer !== null) place(write, pane.firstAnswer, end);
     else place(write, 0, 0);
+    pane.flag.hidden = !(pane.done && !pane.error);
+    pane.flag.style.left = pct(end);
   }
 
   function paint(pane, now, scale = timeScale(now)) {
@@ -606,23 +628,16 @@ const sideBySide = (() => {
     const values = pane.stats.querySelectorAll(".stat-value");
     const first = firstToken(pane);
     values[0].textContent = Number.isFinite(first) ? secs(first) : pane.done ? "—" : "…";
-    if (pane.done && m.tokens_per_s) values[1].textContent = t("side.tps", {n: Math.round(m.tokens_per_s)});
+    if (pane.done && m.tokens_per_s) values[1].textContent = Math.round(m.tokens_per_s) + "/s";
     else if (Number.isFinite(first) && !pane.done) {
       const writing = elapsed(now) - first;
       const estimate = (pane.text.length + pane.thinking.length) / 4;
-      values[1].textContent = writing > 0.3 ? "≈ " + t("side.tps", {n: Math.round(estimate / writing)}) : "…";
+      values[1].textContent = writing > 0.3 ? "≈" + Math.round(estimate / writing) + "/s" : "…";
     } else values[1].textContent = pane.done ? "—" : "…";
     values[2].textContent = secs(paneTime(pane, now));
-    values[3].textContent = !pane.done ? "…" : m.cost_usd > 0 && m.cost_usd * rate() < 0.01 ? "< ₹0.01" : money(m.cost_usd);
-    // Context used: exact once done, estimated while writing.
-    const windowSize = pane.m.context || 0;
-    const used = pane.done && m.input_tokens !== undefined && m.input_tokens !== null
-      ? (m.input_tokens || 0) + (m.output_tokens || 0)
-      : Math.round((S.ask.prompt.length + pane.text.length + pane.thinking.length) / 4);
-    const share = windowSize ? (used / windowSize) * 100 : null;
-    values[4].textContent = share === null ? "—" : (pane.done ? "" : "≈ ") + (share < 0.1 ? share.toFixed(2) : share.toFixed(1)) + "%";
-    pane.context.title = t("side.contextOf", {used: (pane.done ? "" : "≈ ") + tokens(used), window: contextLabel(windowSize)});
-    pane.context.querySelector(".ctx-fill").style.width = share === null ? "0" : `${Math.max(1.5, Math.min(100, share))}%`;
+    const cost = m.cost_usd;
+    values[3].textContent = !pane.done ? "…" : cost === null || cost === undefined ? "—" : cost === 0 ? t("ai.free")
+      : (cost * rate() < 0.01 ? "<0.01" : rupees(cost).replace("₹", ""));
     if (!pane.dirty) return;
     pane.dirty = false;
     if (pane.thinking) pane.thinkingBox.querySelector(".thinking-text").textContent = pane.thinking;
@@ -767,37 +782,46 @@ const sideBySide = (() => {
 
   /* ---------- when everyone has answered ---------- */
 
+  const WINS = {start: "side.winStart", finish: "side.winFinish", speed: "side.winWriter", cheap: "side.winCheap"};
+  function badge(kind) {
+    const node = kind === "cheap" ? el("span", {class: "win-badge", text: "₹"}) : el("span", {class: "win-badge" + (kind === "finish" ? " filled" : "")}, icon(kind === "finish" ? "flag" : kind));
+    node.title = t(WINS[kind]);
+    node.setAttribute("role", "img");
+    node.setAttribute("aria-label", t(WINS[kind]));
+    return node;
+  }
+
   function finishAll() {
     const ok = S.ask.panes.filter((p) => !p.error && p.metrics && !p.metrics.stopped);
     for (const pane of S.ask.panes) pane.node.querySelector(".pane-badges").replaceChildren();
     const wins = [];
     if (ok.length >= 2) {
-      const best = (score, key, better) => {
+      const best = (score, kind, better) => {
         const scored = ok.filter((p) => Number.isFinite(score(p)));
         if (scored.length < 2) return;
         const top = scored.reduce((a, b) => (better(score(b), score(a)) ? b : a));
         if (scored.filter((p) => score(p) === score(top)).length > 1) return;
-        wins.push([top, key, score(top)]);
+        wins.push([top, kind]);
       };
-      best((p) => firstToken(p), "side.winStart", (a, b) => a < b);
-      best((p) => p.metrics.total_s, "side.winFinish", (a, b) => a < b);
-      best((p) => p.metrics.tokens_per_s ?? NaN, "side.winWriter", (a, b) => a > b);
-      best((p) => p.metrics.cost_usd ?? NaN, "side.winCheap", (a, b) => a < b);
+      best((p) => p.metrics.total_s, "finish", (a, b) => a < b);
+      best((p) => p.metrics.tokens_per_s ?? NaN, "speed", (a, b) => a > b);
+      best((p) => p.metrics.cost_usd ?? NaN, "cheap", (a, b) => a < b);
+      best((p) => firstToken(p), "start", (a, b) => a < b);
     }
-    wins.forEach(([pane, key], index) => {
-      const chip = el("span", {class: "chip" + (key === "side.winFinish" ? " filled" : ""), text: t(key)});
-      pane.node.querySelector(".pane-badges").append(chip);
-      pop(chip, 120 + index * 90);
+    wins.forEach(([pane, kind], index) => {
+      const node = badge(kind);
+      pane.node.querySelector(".pane-badges").append(node);
+      pop(node, 120 + index * 90);
     });
     const spent = S.ask.panes.reduce((sum, p) => sum + ((p.metrics && p.metrics.cost_usd) || 0), 0);
-    const parts = wins.map(([pane, key, value]) => {
-      const name = splitName(pane.m).short;
-      const shown = key === "side.winWriter" ? t("side.tps", {n: Math.round(value)}) : key === "side.winCheap" ? money(value) : secs(value);
-      return `${t(key)}: ${name} (${shown})`;
-    });
-    parts.push(t("side.spent", {money: rupees(spent)}));
     const summary = $("side-summary");
-    summary.textContent = parts.join(" · ");
+    summary.replaceChildren();
+    for (const pane of S.ask.panes) {
+      const mine = wins.filter(([p]) => p === pane).map(([, kind]) => kind);
+      if (!mine.length) continue;
+      summary.append(el("span", {class: "sum-item"}, ...mine.map(badge), el("span", {text: splitName(pane.m).short})));
+    }
+    summary.append(el("span", {class: "sum-item sum-total", title: t("side.tipTotal")}, icon("total"), el("span", {text: rupees(spent)})));
     summary.hidden = false;
     $("side-stop").hidden = true;
   }
