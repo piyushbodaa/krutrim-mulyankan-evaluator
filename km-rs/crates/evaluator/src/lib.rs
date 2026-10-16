@@ -7,6 +7,7 @@ pub mod engine;
 pub mod export;
 pub mod graders;
 pub mod importer;
+pub mod live;
 pub mod observations;
 pub mod outputs;
 pub mod pricing;

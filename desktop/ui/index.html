@@ -23,6 +23,10 @@
         <button type="button" data-lang="en" aria-pressed="true">English</button>
         <button type="button" data-lang="hi" aria-pressed="false" lang="hi">हिन्दी</button>
       </div>
+      <button class="ghost" id="side-link" type="button">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="8" height="7" rx="2"/><rect x="13" y="4" width="8" height="7" rx="2"/><rect x="3" y="13" width="8" height="7" rx="2"/><rect x="13" y="13" width="8" height="7" rx="2"/></svg>
+        <span data-i18n="nav.side">Side by side</span>
+      </button>
       <button class="ghost" id="theme-cycle" type="button"></button>
       <button class="ghost" id="accounts-link" type="button">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/></svg>
@@ -49,6 +53,13 @@
         <button class="secondary big" id="home-write" type="button" data-i18n="home.write">Write my own questions</button>
       </div>
       <p class="muted small" data-i18n="home.free">Try it free first: two demo bots need no account and cost nothing.</p>
+      <button class="feature card" id="home-side" type="button">
+        <span class="feature-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span class="feature-text">
+          <strong data-i18n="home.sideTitle">Ask up to four AIs at once</strong>
+          <span class="muted" data-i18n="home.sideText">One question, side by side, live: how fast each AI starts and writes, and what it costs. Uses one OpenRouter key.</span>
+        </span>
+      </button>
       <div id="past" class="past" hidden>
         <h2 class="group-title" data-i18n="home.past">Your past tests</h2>
         <ul id="past-list" class="list"></ul>
@@ -163,6 +174,65 @@
       </div>
     </section>
 
+    <!-- Side by side: one question to up to four AIs -->
+    <section id="side" class="screen" aria-labelledby="side-title" hidden>
+      <div id="side-intro" class="side-intro">
+        <h1 id="side-title" tabindex="-1" data-i18n="side.title">One question. Up to four AIs.</h1>
+        <p class="lede" data-i18n="side.lede">Ask once and watch every answer arrive side by side, with when each AI started, how fast it wrote, how much of its context it used and what it cost.</p>
+      </div>
+      <div id="side-key" class="card side-key" hidden>
+        <h2 data-i18n="side.keyTitle">Connect OpenRouter</h2>
+        <p class="muted" data-i18n="side.keyLede">One OpenRouter key reaches hundreds of AIs from OpenAI, Anthropic, Google, Meta and more. It stays in this computer's password store.</p>
+        <div class="key-row">
+          <input id="side-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-…" aria-label="OpenRouter key">
+          <button class="primary" id="side-key-save" type="button" data-i18n="side.keySave">Connect</button>
+        </div>
+        <p class="small side-key-error" id="side-key-error" role="alert"></p>
+        <p class="small"><a href="https://openrouter.ai/keys" id="side-key-link" data-i18n="side.keyGet">Get a key at openrouter.ai/keys</a></p>
+      </div>
+      <form id="side-composer" class="composer card" autocomplete="off">
+        <label class="sr-only" for="side-prompt" data-i18n="side.promptLabel">Your question</label>
+        <textarea id="side-prompt" rows="4" maxlength="200000" data-i18n-placeholder="side.prompt" placeholder="Ask anything. Every AI gets exactly the same words."></textarea>
+        <div class="composer-bar">
+          <div id="side-picks" class="picks"></div>
+          <button class="primary side-go" id="side-go" type="submit"><span data-i18n="side.ask">Ask</span> <span class="count" id="side-count">0</span> <span id="side-ais">AIs</span></button>
+        </div>
+      </form>
+      <p class="muted small side-status" id="side-status" role="status" aria-live="polite"></p>
+      <div id="side-run" class="side-run" hidden>
+        <div id="side-bar" class="prompt-bar">
+          <p class="prompt-text" id="side-bar-text"></p>
+          <div class="bar-actions">
+            <div class="seg icon-seg" id="side-view" role="group" aria-label="View">
+              <button type="button" data-view="answer" aria-pressed="true" title="Answers" aria-label="Answers" data-i18n-title="side.answers"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9"/></svg></button>
+              <button type="button" data-view="metrics" aria-pressed="false" title="All metrics" aria-label="All metrics" data-i18n-title="side.allMetrics"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11M12 20V4M19 20v-6"/></svg></button>
+            </div>
+            <button class="icon-btn big" id="side-stop" type="button" title="Stop" aria-label="Stop" data-i18n-title="side.stop"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></svg></button>
+            <button class="icon-btn big" id="side-save" type="button" title="Save" aria-label="Save" data-i18n-title="side.save"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
+            <button class="primary" id="side-new" type="button" data-i18n="side.new">New question</button>
+          </div>
+        </div>
+        <div id="side-stage" class="stage"></div>
+        <p id="side-summary" class="side-summary" hidden></p>
+      </div>
+      <div id="side-tray" class="tray-backdrop" hidden>
+        <div class="tray" role="dialog" aria-modal="true" aria-labelledby="tray-title">
+          <div class="tray-head">
+            <div>
+              <h2 id="tray-title" data-i18n="side.pickTitle">Pick up to four AIs</h2>
+              <p class="muted small" id="tray-count"></p>
+            </div>
+            <button class="primary" id="tray-done" type="button" data-i18n="acc.done">Done</button>
+          </div>
+          <div class="tray-tools">
+            <input id="tray-search" type="search" data-i18n-placeholder="side.search" placeholder="Search by name or maker" aria-label="Search">
+            <label class="tray-free"><input id="tray-free" type="checkbox"> <span data-i18n="side.onlyFree">Free only</span></label>
+          </div>
+          <ul id="tray-list" class="tray-list"></ul>
+        </div>
+      </div>
+    </section>
+
     <!-- AI accounts -->
     <section id="accounts" class="screen" aria-labelledby="accounts-title" hidden>
       <h1 id="accounts-title" tabindex="-1" data-i18n="acc.title">Connect your AI accounts</h1>
@@ -199,5 +269,6 @@
   <script src="i18n.js"></script>
   <script src="bridge.js"></script>
   <script src="app.js"></script>
+  <script src="side.js"></script>
 </body>
 </html>

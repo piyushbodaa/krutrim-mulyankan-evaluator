@@ -214,9 +214,15 @@ def test_bad_questions_get_plain_errors_and_pilot_answers_stay_hidden(tmp_path):
 
 
 def test_everyday_copy_avoids_jargon():
-    """The main screens speak plainly: no tokens, suites, runners or MTok."""
+    """The main screens speak plainly: no tokens, suites, runners or MTok.
+
+    The side-by-side screen ("side." strings) is the one place that shows
+    tokens and context, because comparing models live is about them.
+    """
     script = (UI / "i18n.js").read_text(encoding="utf-8")
-    english = script.split("  en: {", 1)[1].split("  hi: {", 1)[0]
+    block = script.split("  en: {", 1)[1].split("  hi: {", 1)[0]
+    lines = block.splitlines()
+    english = "\n".join(line for line in lines if not line.strip().startswith('"side.'))
     for word in ("MTok", "token", "suite", "runner", "API key", "worst case", "harness"):
         assert word not in english, word
     html = (UI / "index.html").read_text(encoding="utf-8")
