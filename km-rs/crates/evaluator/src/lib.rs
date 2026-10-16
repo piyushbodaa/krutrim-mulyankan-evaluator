@@ -7,6 +7,7 @@ pub mod engine;
 pub mod export;
 pub mod graders;
 pub mod importer;
+pub mod naming;
 pub mod observations;
 pub mod outputs;
 pub mod pricing;
@@ -23,6 +24,10 @@ pub mod verdicts;
 pub mod workbench;
 
 pub use engine::{preflight, run_suite, Preflight, PreflightError, RunCallbacks, RunSummary};
+pub use naming::{
+    duration_label, model_blurb, pack_copy, plain_verdict, pretty_model, runner_label, rupees,
+    PlainVerdict,
+};
 pub use observations::{AppObservation, AppObservationRunner};
 pub use pricing::{load_prices, PriceTable};
 pub use report::{build_report, to_html, to_markdown, Report, RunnerRow};

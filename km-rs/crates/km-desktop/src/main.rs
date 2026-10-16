@@ -644,62 +644,6 @@ impl Session {
     }
 }
 
-/// "claude-haiku-4-5" -> "Claude Haiku 4.5"; other ids stay as they are.
-fn pretty_model(model: &str) -> String {
-    let parts: Vec<&str> = model.split('-').collect();
-    let numeric = |s: &&str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
-    match parts.as_slice() {
-        ["claude", family, major, rest @ ..]
-            if family.chars().all(|c| c.is_ascii_lowercase())
-                && numeric(major)
-                && rest.len() <= 1
-                && rest.iter().all(numeric) =>
-        {
-            let mut name = format!("Claude {}{} {major}", family[..1].to_uppercase(), &family[1..]);
-            if let Some(minor) = rest.first() {
-                name.push('.');
-                name.push_str(minor);
-            }
-            name
-        }
-        _ => model.to_string(),
-    }
-}
-
-fn model_blurb(model: &str) -> &'static str {
-    match model {
-        "claude-haiku-4-5" | "claude-haiku-5-5" => "A smaller Claude model. Lower price per token.",
-        "claude-sonnet-4-6" | "claude-sonnet-5" | "claude-sonnet-5-5" => "A mid-size Claude model.",
-        "claude-opus-4-6" | "claude-opus-4-7" | "claude-opus-4-8" | "claude-opus-5"
-        | "claude-opus-5-5" => "A larger Claude model. Higher price per token.",
-        _ => "Priced from the checked price table.",
-    }
-}
-
-fn pack_copy(suite: &Suite) -> (String, String, String, String, String) {
-    match suite.name.as_str() {
-        "india-pilot" => (
-            "India quick check".into(), "भारत झटपट जाँच".into(), "Pilot set".into(),
-            "Adding rupees, removing a repeated entry, and noticing a missing date.".into(),
-            "रुपये जोड़ना, दोहराई गई एंट्री हटाना और गायब तारीख पहचानना।".into(),
-        ),
-        "railway-pilot" => (
-            "Railway booking check".into(), "रेलवे बुकिंग जाँच".into(), "Extra fixture".into(),
-            "Fill in a train journey plan correctly.".into(),
-            "ट्रेन यात्रा की योजना सही ढंग से भरना।".into(),
-        ),
-        "example" => (
-            "Mixed starter questions".into(), "मिले-जुले शुरुआती सवाल".into(), "Pipeline check".into(),
-            "Maths, a line of code, picking the right tool, a bill date, and a short reply that a person marks.".into(),
-            "गणित, कोड की एक लाइन, सही टूल चुनना, बिल की तारीख, और एक छोटा जवाब जिसे कोई व्यक्ति जाँचता है।".into(),
-        ),
-        _ => (
-            suite.name.clone(), suite.name.clone(), suite.validation_status.clone(),
-            suite.description.clone(), suite.description.clone(),
-        ),
-    }
-}
-
 type Emit = Arc<dyn Fn(Value) + Send + Sync>;
 
 impl Session {
