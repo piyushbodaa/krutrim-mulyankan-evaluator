@@ -155,8 +155,9 @@ function go(name) {
   for (const section of document.querySelectorAll(".screen")) section.hidden = section.id !== name;
   showNotice("");
   state.armedDelete = null;
+  document.body.classList.toggle("wide", name === "side");
   for (const stepper of document.querySelectorAll(".stepper")) renderStepper(stepper);
-  const renderers = {home: renderHome, questions: renderQuestions, builder: renderBuilder, ais: renderAis, start: renderStart, accounts: renderAccounts};
+  const renderers = {home: renderHome, questions: renderQuestions, builder: renderBuilder, ais: renderAis, start: renderStart, accounts: renderAccounts, side: renderSide};
   if (renderers[name]) renderers[name]();
   window.scrollTo(0, 0);
   const heading = document.querySelector(`#${name} h1`);
@@ -592,6 +593,7 @@ async function startRun() {
 }
 
 function onProgress(event) {
+  if (event && event.kind === "live") return;
   const run = state.run;
   if (!run) return;
   if (event.type === "start") {
@@ -923,6 +925,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("accounts-link").addEventListener("click", () => { if (!state.busy) { state.returnTo = state.screen; go("accounts"); } });
   $("accounts-done").addEventListener("click", () => go(state.returnTo && state.returnTo !== "accounts" ? state.returnTo : "home"));
   $("home-start").addEventListener("click", () => go("questions"));
+  $("home-side").addEventListener("click", () => go("side"));
+  $("side-link").addEventListener("click", () => { if (!state.busy) go("side"); });
   $("home-write").addEventListener("click", () => newTest());
   for (const button of document.querySelectorAll("[data-goto]")) {
     button.addEventListener("click", () => go(button.dataset.goto));

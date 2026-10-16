@@ -12,6 +12,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const HONESTY: &[(&str, &str)] = &[
     ("pilot", "Unvalidated pilot"),
@@ -188,6 +189,10 @@ struct Session {
     http_port: Mutex<Option<u16>>,
     external_base: Mutex<Option<String>>,
     names: Mutex<BTreeMap<String, String>>,
+    /// Side-by-side questions in flight, by id, with their stop switches.
+    asks: Mutex<BTreeMap<String, Arc<AtomicBool>>>,
+    /// OpenRouter's model list, fetched at most every ten minutes.
+    live_models: Mutex<Option<(Instant, Value)>>,
 }
 
 impl Session {
@@ -233,6 +238,8 @@ impl Session {
             http_port: Mutex::new(None),
             external_base: Mutex::new(None),
             names: Mutex::new(BTreeMap::new()),
+            asks: Mutex::new(BTreeMap::new()),
+            live_models: Mutex::new(None),
         })
     }
 
@@ -701,6 +708,198 @@ fn pack_copy(suite: &Suite) -> (String, String, String, String, String) {
 }
 
 type Emit = Arc<dyn Fn(Value) + Send + Sync>;
+
+/// Side by side: one question to up to four OpenRouter models at once.
+const MAX_LIVE_MODELS: usize = 4;
+
+impl Session {
+    fn openrouter_key(&self) -> Option<String> {
+        self.env_snapshot()
+            .get("OPENROUTER_API_KEY")
+            .filter(|key| !key.trim().is_empty())
+            .cloned()
+    }
+
+    fn live_status(&self) -> Result<Value, String> {
+        let rate = self.settings.usd_to_inr;
+        let Some(key) = self.openrouter_key() else {
+            return Ok(json!({"connected": false, "usd_to_inr": rate}));
+        };
+        let mut status = live::openrouter_key_status(&live::openrouter_base(), &key)?;
+        status["connected"] = json!(true);
+        status["usd_to_inr"] = json!(rate);
+        Ok(status)
+    }
+
+    fn live_models(&self) -> Result<Value, String> {
+        let mut cache = self.live_models.lock().unwrap();
+        let models = match cache.as_ref() {
+            Some((at, models)) if at.elapsed() < Duration::from_secs(600) => models.clone(),
+            _ => {
+                let models = Value::Array(live::openrouter_models(&live::openrouter_base())?);
+                *cache = Some((Instant::now(), models.clone()));
+                models
+            }
+        };
+        Ok(json!({"models": models, "usd_to_inr": self.settings.usd_to_inr}))
+    }
+
+    /// Ask every picked model at once. Each streams into its own pane through
+    /// progress events; the reply holds every model's final metrics.
+    fn live_ask(&self, params: &Map<String, Value>, emit: &Emit) -> Result<Value, String> {
+        let key = self
+            .openrouter_key()
+            .ok_or("Connect your OpenRouter key first.")?;
+        let prompt = params
+            .get("prompt")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if prompt.is_empty() {
+            return Err("Type a question first.".into());
+        }
+        if prompt.chars().count() > 200_000 {
+            return Err("This question is too long.".into());
+        }
+        let mut models: Vec<String> = Vec::new();
+        for model in params
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            if let Some(id) = model
+                .as_str()
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && id.len() <= 200)
+            {
+                if !models.iter().any(|known| known == id) {
+                    models.push(id.to_string());
+                }
+            }
+        }
+        if models.is_empty() || models.len() > MAX_LIVE_MODELS {
+            return Err("Pick between one and four AIs.".into());
+        }
+        let ask_id = params
+            .get("ask_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && id.len() <= 64)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("ask-{}", tokens::random_token().unwrap_or_default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        self.asks.lock().unwrap().insert(ask_id.clone(), stop.clone());
+        let base = live::openrouter_base();
+        let workers: Vec<_> = models
+            .into_iter()
+            .enumerate()
+            .map(|(slot, model)| {
+                let (emit, stop, base, key, prompt, ask_id) = (
+                    emit.clone(),
+                    stop.clone(),
+                    base.clone(),
+                    key.clone(),
+                    prompt.clone(),
+                    ask_id.clone(),
+                );
+                std::thread::spawn(move || {
+                    live_worker(&emit, &ask_id, slot, &base, &key, &model, &prompt, &stop)
+                })
+            })
+            .collect();
+        let results: Vec<Value> = workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|_| json!({"error": "This answer stopped unexpectedly."}))
+            })
+            .collect();
+        self.asks.lock().unwrap().remove(&ask_id);
+        Ok(json!({"ask_id": ask_id, "results": results, "usd_to_inr": self.settings.usd_to_inr}))
+    }
+
+    fn live_stop(&self, params: &Map<String, Value>) -> Value {
+        let ask_id = params.get("ask_id").and_then(Value::as_str).unwrap_or("");
+        let asks = self.asks.lock().unwrap();
+        let stopping = match asks.get(ask_id) {
+            Some(stop) => {
+                stop.store(true, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        };
+        json!({"stopping": stopping})
+    }
+}
+
+/// One model's answer. Text goes to the window in small batches so four
+/// panes paint smoothly; then come the full metrics and, a moment later,
+/// OpenRouter's own server-side record of the request.
+#[allow(clippy::too_many_arguments)]
+fn live_worker(
+    emit: &Emit,
+    ask_id: &str,
+    slot: usize,
+    base: &str,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    stop: &AtomicBool,
+) -> Value {
+    let send = |kind: &str, extra: Value| {
+        let mut event = json!({"kind": "live", "ask_id": ask_id, "slot": slot, "type": kind});
+        if let (Some(event), Some(extra)) = (event.as_object_mut(), extra.as_object()) {
+            for (name, value) in extra {
+                event.insert(name.clone(), value.clone());
+            }
+        }
+        emit(event);
+    };
+    let flush = |answer: &mut String, thinking: &mut String| {
+        if !thinking.is_empty() {
+            send("text", json!({"text": std::mem::take(thinking), "thinking": true}));
+        }
+        if !answer.is_empty() {
+            send("text", json!({"text": std::mem::take(answer), "thinking": false}));
+        }
+    };
+    send("start", json!({"model": model}));
+    let (mut answer, mut thinking) = (String::new(), String::new());
+    let mut last = Instant::now();
+    let metrics = live::stream_chat(base, key, model, prompt, stop, &mut |event| match event {
+        live::LiveEvent::Connected(at) => send("connected", json!({"at": at})),
+        live::LiveEvent::First { at, thinking: is_thinking } => {
+            send("first", json!({"at": at, "thinking": is_thinking}))
+        }
+        live::LiveEvent::Text { text, thinking: is_thinking } => {
+            if is_thinking {
+                thinking.push_str(text);
+            } else {
+                answer.push_str(text);
+            }
+            if last.elapsed() >= Duration::from_millis(40) {
+                flush(&mut answer, &mut thinking);
+                last = Instant::now();
+            }
+        }
+    });
+    flush(&mut answer, &mut thinking);
+    let mut result = metrics.to_json();
+    send("done", json!({"metrics": result.clone()}));
+    if let (Some(id), None, false) = (
+        metrics.generation_id.as_deref(),
+        metrics.error.as_ref(),
+        metrics.stopped,
+    ) {
+        if let Some(stats) = live::generation_stats(base, key, id, 4) {
+            send("stats", json!({"stats": stats.clone()}));
+            result["server"] = stats;
+        }
+    }
+    result
+}
 
 impl Session {
     fn run(&self, params: &Map<String, Value>, emit_progress: &Emit) -> Result<Value, String> {
@@ -1503,6 +1702,8 @@ impl Session {
             http_port: Mutex::new(*self.http_port.lock().unwrap()),
             external_base: Mutex::new(self.external_base.lock().unwrap().clone()),
             names: Mutex::new(self.names.lock().unwrap().clone()),
+            asks: Mutex::new(BTreeMap::new()),
+            live_models: Mutex::new(None),
         }
     }
 }
@@ -1592,6 +1793,7 @@ const SHELL_FILES: &[&str] = &[
     "i18n.js",
     "bridge.js",
     "dashboard-shim.js",
+    "side.js",
 ];
 const PREVIEW_FILES: &[(&str, &str)] = &[
     ("style.css", "text/css; charset=utf-8"),
@@ -1886,6 +2088,17 @@ fn dispatch(session: &Arc<Session>, request: &Value, emit: &Emit) {
                 session.run(params, &on_event)?
             }
             "cancel" => session.cancel(),
+            "live_status" => session.live_status()?,
+            "live_models" => session.live_models()?,
+            "live_ask" => {
+                let ident2 = ident.clone();
+                let emit2 = emit.clone();
+                let on_event: Emit = Arc::new(move |event: Value| {
+                    emit2(json!({"id": ident2, "event": "progress", "result": event}));
+                });
+                session.live_ask(params, &on_event)?
+            }
+            "live_stop" => session.live_stop(params),
             "report" => session.report(&run_id_param())?,
             "list_runs" => Value::Array(session.list_runs()),
             "share_card" => session.share_card(&run_id_param())?,
@@ -1956,7 +2169,10 @@ fn main() {
             emit(json!({"id": null, "ok": false, "error": "The message could not be read."}));
             continue;
         }
-        if request.get("method").and_then(|v| v.as_str()) == Some("run") {
+        // Long or networked calls get their own thread so stop, cancel and
+        // the rest keep answering meanwhile.
+        let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
+        if ["run", "live_ask", "live_models", "live_status"].contains(&method) {
             let (session2, emit2) = (session.clone(), emit.clone());
             run_threads.push(std::thread::spawn(move || {
                 dispatch(&session2, &request, &emit2)
