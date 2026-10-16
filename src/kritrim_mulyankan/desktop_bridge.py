@@ -179,6 +179,7 @@ SHELL_FILES = {
     "i18n.js": "text/javascript; charset=utf-8",
     "bridge.js": "text/javascript; charset=utf-8",
     "dashboard-shim.js": "text/javascript; charset=utf-8",
+    "side.js": "text/javascript; charset=utf-8",
 }
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 _SCRIPT_TAG = '<script src="preview-fixtures.js" defer></script>'
