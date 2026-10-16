@@ -258,7 +258,8 @@ body.wide .foot{display:none}
 .side-go{display:inline-flex;align-items:center;gap:6px}
 .side-go .count{display:inline-block;min-width:.7em;text-align:center}
 .side-status{text-align:center;margin:12px 0 0}
-.side-run{display:grid;gap:12px;margin-top:4px}
+.side-run{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;margin-top:4px}
+.side-run > *{min-width:0}
 .prompt-bar{display:flex;align-items:center;justify-content:space-between;gap:12px 16px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px 10px 18px}
 .prompt-text{margin:0;flex:1 1 320px;min-width:0;font-weight:600;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
