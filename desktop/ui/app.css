@@ -50,7 +50,7 @@ h1:focus{outline:none}
 .lede{margin:0 0 20px;max-width:60ch;font-size:17px}
 .muted{color:var(--muted)}
 .small{font-size:14px}
-.kicker{margin:0;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.kicker{margin:0;font-size:14px;font-weight:500;color:var(--muted)}
 .group-title{margin:26px 0 10px;font-size:15px;font-weight:600}
 
 /* Buttons */
@@ -173,7 +173,12 @@ input:focus,select:focus,textarea:focus{border-color:var(--ink)}
 .cell.other{border-style:dashed;border-color:var(--muted)}
 .strip.bar{display:block;height:16px;border-radius:999px;border:1px solid var(--line);background:var(--soft);overflow:hidden}
 .bar-fill{display:block;height:100%;background:var(--ink)}
-.verdicts{margin:0;padding-left:20px;display:grid;gap:6px}
+.verdicts{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+.verdict{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}
+.chip{display:inline-flex;align-items:center;min-height:28px;padding:0 12px;border-radius:999px;border:1px solid var(--ink);background:transparent;color:var(--ink);font:600 13px/1 var(--font);white-space:nowrap}
+button.chip{cursor:help}
+.chip.filled{background:var(--ink);color:var(--paper)}
+.verdict .why{flex-basis:100%;margin:0;font-size:14px;color:var(--muted)}
 .honest{margin:20px 0 0;padding:14px 16px;border-radius:var(--radius);background:var(--soft);font-size:15px}
 .answer-card{display:grid;gap:8px;margin-bottom:12px}
 .answer-card h2{font-size:17px}
