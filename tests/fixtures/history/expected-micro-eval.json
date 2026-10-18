@@ -1,0 +1,17 @@
+{
+ "judge_prompt_hash": "cb022474dcd45416",
+ "tasks": [
+  {
+   "id": "mine.chatgpt.0001-45042766",
+   "prompt": "Add 18% GST to 42500. Number only.",
+   "reference": "50150",
+   "rubric": "Must equal 50150."
+  },
+  {
+   "id": "mine.claude.0002-7886f8dc",
+   "prompt": "My ticket is RLWL 14. Can I board the train?",
+   "reference": "No. A waitlisted RLWL e-ticket holder cannot board.",
+   "rubric": "Must say the passenger cannot board."
+  }
+ ]
+}

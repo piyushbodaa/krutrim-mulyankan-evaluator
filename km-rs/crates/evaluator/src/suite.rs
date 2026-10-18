@@ -276,7 +276,7 @@ fn ymap<'a>(v: &'a Yaml, what: &str) -> Result<&'a serde_yaml::Mapping, String> 
 }
 
 fn yget<'a>(m: &'a serde_yaml::Mapping, key: &str) -> Option<&'a Yaml> {
-    m.get(&Yaml::String(key.to_string()))
+    m.get(Yaml::String(key.to_string()))
 }
 
 fn ystr(v: &Yaml, what: &str) -> Result<String, String> {

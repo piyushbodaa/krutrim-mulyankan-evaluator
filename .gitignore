@@ -18,6 +18,10 @@ build/
 runs/
 *.db
 
+# Personal micro-evals mined from your own history (private prompts/answers)
+suites/*.evidence.json
+suites/my-*.yaml
+
 # Desktop shell
 desktop/node_modules/
 desktop/src-tauri/target/

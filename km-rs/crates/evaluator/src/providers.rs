@@ -313,7 +313,11 @@ pub fn make_adapter(
 }
 
 impl Adapter {
-    pub(crate) fn matches_configuration(&self, provider: &str, env: &BTreeMap<String, String>) -> bool {
+    pub(crate) fn matches_configuration(
+        &self,
+        provider: &str,
+        env: &BTreeMap<String, String>,
+    ) -> bool {
         self.provider == provider && &self.env == env
     }
 
@@ -340,6 +344,7 @@ impl Adapter {
             .map(|u| u.trim_end_matches('/').to_string())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn complete(
         &self,
         model: &str,
@@ -437,6 +442,7 @@ impl Adapter {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn complete_openai(
         &self,
         model: &str,

@@ -52,6 +52,104 @@ impl Grade {
 }
 
 pub fn grade(task: &Task, output: &str, fixture_base: &Path) -> Grade {
+    grade_with_judge(task, output, fixture_base, None)
+}
+
+/// Absolute LLM-judge prompt, mirroring graders/llm_judge.py.
+fn build_absolute_prompt(task: &Task, response: &str) -> String {
+    let reference = match &task.reference {
+        Some(r) => format!("\n<reference_answer>\n{r}\n</reference_answer>\n"),
+        None => String::new(),
+    };
+    format!(
+        "You are an impartial grader. Score the RESPONSE to the TASK against the RUBRIC \
+         on an integer scale from 1 (fails the rubric) to 10 (fully satisfies it). Judge \
+         only what the rubric asks for; do not reward length or confidence.\n\n\
+         <task>\n{}\n</task>\n\n<rubric>\n{}\n</rubric>\n{reference}<response>\n{}\n</response>\n\n\
+         Reply with JSON only: {{\"score\": <integer 1-10>, \"reason\": \"<one sentence>\"}}",
+        task.render_prompt(),
+        task.rubric.as_deref().unwrap_or(""),
+        response
+    )
+}
+
+fn grade_llm_judge(
+    task: &Task,
+    output: &str,
+    mode: &str,
+    judge_model: &Option<String>,
+    pass_threshold: i64,
+    judge: Option<&crate::judge::JudgeFn>,
+) -> Grade {
+    let pending = |reason: &str| {
+        let mut d = Map::new();
+        d.insert("reason".into(), Value::String(reason.into()));
+        Grade {
+            grader: "llm_judge".into(),
+            status: "pending".into(),
+            passed: None,
+            score: None,
+            details: d,
+        }
+    };
+    if mode == "pairwise" {
+        return pending("pairwise");
+    }
+    let Some(judge) = judge else {
+        return pending("no judge configured");
+    };
+    let judged = judge(&build_absolute_prompt(task, output)).and_then(|reply| {
+        let start = reply
+            .find('{')
+            .ok_or("judge reply contains no JSON object")?;
+        let end = reply
+            .rfind('}')
+            .ok_or("judge reply contains no JSON object")?;
+        let data: Value = serde_json::from_str(&reply[start..=end])
+            .map_err(|e| format!("judge reply is not valid JSON: {e}"))?;
+        let score = data
+            .get("score")
+            .and_then(|v| v.as_f64())
+            .filter(|s| (1.0..=10.0).contains(s))
+            .ok_or_else(|| format!("judge score must be 1-10, got {:?}", data.get("score")))?;
+        Ok((
+            score.round() as i64,
+            data.get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        ))
+    });
+    match judged {
+        Ok((score, reason)) => {
+            let mut d = Map::new();
+            d.insert("raw_score".into(), Value::from(score));
+            d.insert("reason".into(), Value::String(reason));
+            d.insert(
+                "judge_model".into(),
+                judge_model
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            );
+            Grade {
+                grader: "llm_judge".into(),
+                status: "graded".into(),
+                passed: Some(score >= pass_threshold),
+                score: Some((score - 1) as f64 / 9.0),
+                details: d,
+            }
+        }
+        Err(e) => Grade::error("llm_judge", e),
+    }
+}
+
+pub fn grade_with_judge(
+    task: &Task,
+    output: &str,
+    fixture_base: &Path,
+    judge: Option<&crate::judge::JudgeFn>,
+) -> Grade {
     match &task.grader {
         GraderSpec::Exact {
             expected,
@@ -100,22 +198,11 @@ pub fn grade(task: &Task, output: &str, fixture_base: &Path) -> Grade {
             let passed = built.map(|re| re.is_match(output.trim())).unwrap_or(false);
             Grade::graded("regex", passed, Map::new())
         }
-        GraderSpec::LlmJudge { mode, .. } => {
-            let mut d = Map::new();
-            let reason = if mode == "pairwise" {
-                "pairwise"
-            } else {
-                "no judge configured"
-            };
-            d.insert("reason".into(), Value::String(reason.into()));
-            Grade {
-                grader: "llm_judge".into(),
-                status: "pending".into(),
-                passed: None,
-                score: None,
-                details: d,
-            }
-        }
+        GraderSpec::LlmJudge {
+            mode,
+            judge_model,
+            pass_threshold,
+        } => grade_llm_judge(task, output, mode, judge_model, *pass_threshold, judge),
         GraderSpec::Workflow { fixture, expected } => {
             grade_workflow(fixture, expected, output, fixture_base)
         }

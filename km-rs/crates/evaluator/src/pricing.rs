@@ -93,18 +93,18 @@ impl PriceTable {
                 format!("{origin}: provider '{provider}' needs a `models` mapping")
             })?;
             let source = block
-                .get(&serde_yaml::Value::String("source".into()))
+                .get(serde_yaml::Value::String("source".into()))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             let as_of = block
-                .get(&serde_yaml::Value::String("as_of".into()))
+                .get(serde_yaml::Value::String("as_of".into()))
                 .and_then(|v| match v {
                     serde_yaml::Value::String(s) => Some(s.clone()),
                     serde_yaml::Value::Number(n) => Some(n.to_string()),
                     _ => None,
                 });
             let models = block
-                .get(&serde_yaml::Value::String("models".into()))
+                .get(serde_yaml::Value::String("models".into()))
                 .and_then(|v| v.as_mapping())
                 .ok_or_else(|| {
                     format!("{origin}: provider '{provider}' needs a `models` mapping")

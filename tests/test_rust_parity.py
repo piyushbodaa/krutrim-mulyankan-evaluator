@@ -60,6 +60,23 @@ pytestmark = pytest.mark.skipif(
     reason="Rust km not built (set KM_RUST_BIN or build km-rs/)",
 )
 
+
+def test_rust_binary_is_not_stale():
+    """A stale prebuilt binary once made all parity tests fail with JSON diffs.
+
+    Fail once, clearly, instead: rebuild with
+    `cargo build --release --locked --manifest-path km-rs/Cargo.toml`.
+    """
+    assert RUST_KM is not None
+    binary_mtime = RUST_KM.stat().st_mtime
+    newest_source = max(
+        p.stat().st_mtime for p in (ROOT / "km-rs").rglob("*.rs") if "target" not in p.parts
+    )
+    assert binary_mtime >= newest_source, (
+        f"{RUST_KM} is older than the km-rs sources; rebuild it before trusting parity"
+    )
+
+
 VOLATILE = {
     "id",
     "started_at",

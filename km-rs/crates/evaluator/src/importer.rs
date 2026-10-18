@@ -140,8 +140,8 @@ pub fn import_suite(source: &Path, name: Option<&str>) -> Result<ImportedSuite, 
 fn is_our_suite(doc: &serde_yaml::Value) -> bool {
     doc.as_mapping()
         .map(|m| {
-            m.contains_key(&serde_yaml::Value::String("tasks".into()))
-                || m.contains_key(&serde_yaml::Value::String("version".into()))
+            m.contains_key(serde_yaml::Value::String("tasks".into()))
+                || m.contains_key(serde_yaml::Value::String("version".into()))
         })
         .unwrap_or(false)
 }
@@ -222,7 +222,7 @@ fn translate(record: &Map<String, Value>, fallback_id: &str) -> Option<Map<Strin
         .and_then(|v| match v {
             Value::String(s) => Some(s.clone()),
             Value::Number(n) => Some(n.to_string()),
-            Value::Null | _ => None,
+            _ => None,
         })
         .unwrap_or_else(|| fallback_id.to_string());
     let mut m = Map::new();

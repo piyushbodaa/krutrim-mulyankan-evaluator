@@ -3,14 +3,17 @@ resolver = "2"
 members = ["crates/evaluator", "crates/km", "crates/km-desktop"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.77"
 license = "MIT"
 
 # Small, static release binaries. `strip` plus fat LTO is worth ~30% here.
+# opt-level 2 measured fastest on the 337 MB history-parse benchmark at
+# 7.55 MB, vs 5.91 MB / 26% slower at "z" and 8.38 MB / no faster at 3
+# (2026-10-18, this machine; see km-rs/README.md).
 [profile.release]
-opt-level = "z"
+opt-level = 2
 lto = "fat"
 codegen-units = 1
 panic = "abort"

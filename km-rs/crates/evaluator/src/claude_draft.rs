@@ -493,7 +493,10 @@ mod tests {
         };
         let stdout = stdout.join().unwrap();
         let stderr = stderr.join().unwrap();
-        assert!(completed, "CLI blocked writing output larger than its pipe buffers");
+        assert!(
+            completed,
+            "CLI blocked writing output larger than its pipe buffers"
+        );
         assert_eq!(stdout.bytes().filter(|byte| *byte == b'A').count(), BYTES);
         assert_eq!(stderr.bytes().filter(|byte| *byte == b'B').count(), BYTES);
     }

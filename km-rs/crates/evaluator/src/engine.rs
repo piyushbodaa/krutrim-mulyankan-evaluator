@@ -1,7 +1,8 @@
 //! Run engine, mirroring engine.py: preflight, per-attempt accounting in
 //! the same order, manifests, artifacts, and the SQLite records.
 
-use crate::graders::{grade as run_grader, Grade};
+use crate::graders::{grade_with_judge as run_grader, Grade};
+use crate::judge::JudgeFn;
 use crate::provenance::{redact, redact_str, source_metadata};
 use crate::pypy::sha256_hex;
 use crate::runners::{RunContext, RunOutput, Runner, Usage, VERSION};
@@ -207,20 +208,14 @@ pub fn new_run_dir(runs_dir: &Path) -> std::io::Result<(String, PathBuf)> {
     }
 }
 
+#[derive(Default)]
+#[allow(clippy::type_complexity)]
 pub struct RunCallbacks<'a> {
     pub on_start: Option<&'a dyn Fn(&str)>,
     pub on_attempt: Option<&'a dyn Fn(&str, &str)>,
     pub on_result: Option<&'a dyn Fn(&ResultRecord)>,
-}
-
-impl Default for RunCallbacks<'_> {
-    fn default() -> Self {
-        RunCallbacks {
-            on_start: None,
-            on_attempt: None,
-            on_result: None,
-        }
-    }
+    /// Grading judge for `llm_judge` tasks; None leaves them pending.
+    pub judge: Option<&'a JudgeFn>,
 }
 
 pub struct RunSummary {
@@ -402,7 +397,7 @@ pub fn run_suite(
                     run_status = if out.error.is_some() { "error" } else { "ok" };
                     grade = if run_status == "ok" {
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            run_grader(task, &out.output, &fixture_base)
+                            run_grader(task, &out.output, &fixture_base, callbacks.judge)
                         })) {
                             Ok(g) => Some(g),
                             Err(_) => Some(Grade::error(

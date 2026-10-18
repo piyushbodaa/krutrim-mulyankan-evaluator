@@ -1,0 +1,6 @@
+{"type": "user", "timestamp": "2026-09-02T09:00:00Z", "message": {"role": "user", "content": "In Python, sum(x*x for x in range(4)) equals what? Number only."}}
+{"type": "assistant", "timestamp": "2026-09-02T09:00:05Z", "message": {"role": "assistant", "model": "claude-code-test", "content": [{"type": "thinking", "thinking": "compute"}, {"type": "text", "text": "30"}]}}
+{"type": "user", "timestamp": "2026-09-02T09:01:00Z", "message": {"role": "user", "content": [{"type": "tool_result", "content": "ignored tool output"}]}}
+{"type": "assistant", "timestamp": "2026-09-02T09:01:05Z", "message": {"role": "assistant", "model": "claude-code-test", "content": [{"type": "tool_use", "name": "Read", "input": {}}]}}
+{"type": "user", "timestamp": "2026-09-02T09:02:00Z", "isMeta": true, "message": {"role": "user", "content": "meta noise"}}
+{"type": "user", "timestamp": "2026-09-02T09:03:00Z", "message": {"role": "user", "content": "<command-name>/clear</command-name>"}}

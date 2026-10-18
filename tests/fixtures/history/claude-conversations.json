@@ -1,0 +1,37 @@
+[
+  {
+    "uuid": "conv-train",
+    "name": "Train waitlist",
+    "created_at": "2026-09-01T10:00:00Z",
+    "chat_messages": [
+      {
+        "sender": "human",
+        "created_at": "2026-09-01T10:00:00Z",
+        "content": [{"type": "text", "text": "My ticket is RLWL 14. Can I board the train?"}],
+        "attachments": []
+      },
+      {
+        "sender": "assistant",
+        "created_at": "2026-09-01T10:00:20Z",
+        "model": "claude-test",
+        "content": [{"type": "text", "text": "Yes, you can board and ask the TTE for a seat."}],
+        "attachments": []
+      },
+      {
+        "sender": "human",
+        "created_at": "2026-09-01T10:01:00Z",
+        "text": "Thanks, write a one-line poem about rain.",
+        "content": [],
+        "attachments": []
+      },
+      {
+        "sender": "assistant",
+        "created_at": "2026-09-01T10:01:20Z",
+        "model": "claude-test",
+        "text": "Rain stitches silver threads through the thirsty earth.",
+        "content": [],
+        "attachments": []
+      }
+    ]
+  }
+]

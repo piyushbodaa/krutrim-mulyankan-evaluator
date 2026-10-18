@@ -87,6 +87,9 @@ fn dispatch(args: &[String]) -> Result<u8, String> {
             Ok(0)
         }
         "list" => cmd_list(&args[1..]),
+        "history" => cmd_history(&args[1..]),
+        "doctor" => cmd_doctor(&args[1..]),
+        "micro-eval" => cmd_micro_eval(&args[1..]),
         "run" => cmd_run(&args[1..]),
         "import-suite" => cmd_import(&args[1..]),
         "ui" => cmd_ui(&args[1..]),
@@ -116,7 +119,7 @@ fn boxed(text: &str) -> String {
 }
 
 fn main_help() -> String {
-    "Usage: km [OPTIONS] COMMAND [ARGS]...\n\nLocal tests for AI models, harnesses and agents.\n\nOptions:\n  --install-completion  Install completion for the current shell.\n  --show-completion     Show completion for the current shell, to copy or customize the installation.\n  --help                Show this message and exit.\n\nCommands:\n  list          List suites, runners, or past runs: km list suites|runners|runs\n  run           Run SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n  import-suite  Import a foreign suite directory into Mulyankan YAML.\n  ui            Open a local pilot workbench with task selection and free mock checks.\n  export        Write the schema-1.1 JSON export (default: latest run). Outputs are omitted unless --include-outputs is explicit.\n  report        Print the leaderboard for RUN_ID (default: latest run).\n".into()
+    "Usage: km [OPTIONS] COMMAND [ARGS]...\n\nLocal tests for AI models, harnesses and agents.\n\nOptions:\n  --install-completion  Install completion for the current shell.\n  --show-completion     Show completion for the current shell, to copy or customize the installation.\n  --help                Show this message and exit.\n\nCommands:\n  history       Inspect your ChatGPT/Claude/Claude Code history offline (counts only).\n  doctor        Check suites, prices, keys and the local judge path.\n  micro-eval    Mine prompts your AI answered wrongly into a personal suite.\n  list          List suites, runners, or past runs: km list suites|runners|runs\n  run           Run SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n  import-suite  Import a foreign suite directory into Mulyankan YAML.\n  ui            Open a local pilot workbench with task selection and free mock checks.\n  export        Write the schema-1.1 JSON export (default: latest run). Outputs are omitted unless --include-outputs is explicit.\n  report        Print the leaderboard for RUN_ID (default: latest run).\n".into()
 }
 
 fn load_dotenv() {
@@ -284,6 +287,492 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
+// ---------------- history / micro-eval ----------------
+
+type HistoryArgs = Option<(Vec<PathBuf>, String, Vec<String>)>;
+
+fn parse_history_args(args: &[String], help: &str) -> Result<HistoryArgs, u8> {
+    // Split positionals from --source; the rest belongs to the caller's parser.
+    let mut paths = Vec::new();
+    let mut source = "auto".to_string();
+    let mut rest = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--help" => {
+                println!("{help}");
+                return Ok(None);
+            }
+            "--source" => {
+                i += 1;
+                source = args
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| err1("expected a value after --source"))?;
+            }
+            other if other.starts_with("--source=") => {
+                source = other["--source=".len()..].to_string()
+            }
+            other if !other.starts_with('-') && rest.is_empty() && !other.contains('=') => {
+                paths.push(PathBuf::from(other))
+            }
+            other => rest.push(other.to_string()),
+        }
+        i += 1;
+    }
+    if paths.is_empty() {
+        eprintln!("error: Missing argument 'PATHS...'.");
+        return Err(2);
+    }
+    Ok(Some((paths, source, rest)))
+}
+
+fn cmd_history(args: &[String]) -> Result<u8, String> {
+    let help = "Usage: km history [--source auto|chatgpt|claude|claude-code] PATHS...\n\n\
+        Inspect your own chat history exports offline. Counts only; prints no content.\n";
+    let Some((paths, source, rest)) = (match parse_history_args(args, help) {
+        Ok(v) => v,
+        Err(code) => return Ok(code),
+    }) else {
+        return Ok(0);
+    };
+    if !rest.is_empty() {
+        return Ok(err1(format!("No such option: {}", rest[0])));
+    }
+    let history = match krutrim_evaluator::history::load_history(&paths, &source) {
+        Ok(h) => h,
+        Err(e) => return Ok(err1(e)),
+    };
+    let pairs = history.pairs();
+    let mut rows = Vec::new();
+    for (src, count) in history.by_source() {
+        let pair_count = pairs.iter().filter(|p| p.source == src).count();
+        rows.push(vec![src, count.to_string(), pair_count.to_string()]);
+    }
+    println!(
+        "{}",
+        render_table(
+            None,
+            &["Source", "Conversations", "Prompts with an answer"],
+            &rows
+        )
+    );
+    println!(
+        "Total: {} conversations, {} prompts. Nothing was uploaded or called.",
+        history.conversations.len(),
+        pairs.len()
+    );
+    Ok(0)
+}
+
+fn print_failure_breakdown(failures: &[krutrim_evaluator::miner::MinedFailure]) {
+    if failures.is_empty() {
+        return;
+    }
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut add =
+        |label: String, key: &dyn Fn(&krutrim_evaluator::miner::MinedFailure) -> String| {
+            let mut counts: Vec<(String, usize)> = Vec::new();
+            for f in failures {
+                let k = key(f);
+                match counts.iter_mut().find(|(s, _)| *s == k) {
+                    Some((_, n)) => *n += 1,
+                    None => counts.push((k, 1)),
+                }
+            }
+            counts.sort_by_key(|x| std::cmp::Reverse(x.1));
+            for (k, n) in counts {
+                rows.push(vec![format!("{label}: {k}"), n.to_string()]);
+            }
+        };
+    add("source".into(), &|f| f.pair.source.clone());
+    add("original model".into(), &|f| {
+        f.pair
+            .model
+            .clone()
+            .unwrap_or_else(|| "unknown model".into())
+    });
+    println!(
+        "{}",
+        render_table(
+            Some("Where your AI went wrong"),
+            &["Failures by", "Count"],
+            &rows
+        )
+    );
+}
+
+fn cmd_doctor(_args: &[String]) -> Result<u8, String> {
+    let s = settings();
+    let env_map: BTreeMap<String, String> = std::env::vars().collect();
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut hard_fail = false;
+    let dir = suites_dir(&s);
+    let paths = krutrim_evaluator::discover_suites(&dir);
+    let mut loaded = 0;
+    for path in &paths {
+        match load_suite(path) {
+            Ok(_) => loaded += 1,
+            Err(e) => {
+                rows.push(vec![
+                    format!(
+                        "suite {}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    ),
+                    format!("BROKEN: {e}"),
+                ]);
+                hard_fail = true;
+            }
+        }
+    }
+    rows.push(vec![
+        "suites".into(),
+        format!("{loaded}/{} load from {}/", paths.len(), dir.display()),
+    ]);
+    match load_prices(Some(&s.prices_path)) {
+        Ok(prices) => rows.push(vec![
+            "prices".into(),
+            format!("{} priced models", prices.prices.len()),
+        ]),
+        Err(e) => {
+            rows.push(vec!["prices".into(), format!("BROKEN: {e}")]);
+            hard_fail = true;
+        }
+    }
+    let (mut ready, mut missing) = (Vec::new(), Vec::new());
+    for provider in [
+        "anthropic",
+        "openai",
+        "xai",
+        "gemini",
+        "openrouter",
+        "ollama",
+        "vllm",
+        "compatible",
+    ] {
+        if krutrim_evaluator::providers::credentials_problem(provider, &env_map).is_some() {
+            missing.push(provider);
+        } else {
+            ready.push(provider);
+        }
+    }
+    rows.push(vec![
+        "providers ready".into(),
+        if ready.is_empty() {
+            "none".into()
+        } else {
+            ready.join(", ")
+        },
+    ]);
+    rows.push(vec![
+        "providers missing keys".into(),
+        if missing.is_empty() {
+            "none".into()
+        } else {
+            missing.join(", ")
+        },
+    ]);
+    match env_map.get("MJ_JUDGE") {
+        Some(spec) => {
+            let problems = krutrim_evaluator::judge::judge_problems(spec, &env_map);
+            rows.push(vec![
+                "MJ_JUDGE".into(),
+                if problems.is_empty() {
+                    spec.clone()
+                } else {
+                    format!("{spec} — {}", problems.join("; "))
+                },
+            ]);
+        }
+        None => rows.push(vec![
+            "MJ_JUDGE".into(),
+            "not set (pass --judge when mining/running)".into(),
+        ]),
+    }
+    let ollama = std::net::TcpStream::connect_timeout(
+        &"127.0.0.1:11434".parse().expect("valid address"),
+        std::time::Duration::from_secs(2),
+    )
+    .is_ok();
+    rows.push(vec![
+        "ollama".into(),
+        if ollama {
+            "reachable at localhost:11434 — free local judge".into()
+        } else {
+            "not reachable at localhost:11434 (fine if unused)".into()
+        },
+    ]);
+    println!(
+        "{}",
+        render_table(Some("km doctor"), &["Check", "Status"], &rows)
+    );
+    Ok(if hard_fail {
+        err1("doctor found broken suites/prices above")
+    } else {
+        0
+    })
+}
+
+fn cmd_micro_eval(args: &[String]) -> Result<u8, String> {
+    let help = "Usage: km micro-eval [OPTIONS] PATHS...\n\n\
+        Mine prompts your AI answered wrongly and build them into a personal suite.\n\n\
+        Options:\n  \
+        --judge TEXT            Mining judge as <provider>/<model> (default MJ_JUDGE).\n  \
+        --out, -o PATH          Suite YAML to create  [default: suites/my-micro-eval.yaml]\n  \
+        --name TEXT             Suite name  [default: my-micro-eval]\n  \
+        --version TEXT          Suite version (default: today)\n  \
+        --source TEXT           auto|chatgpt|claude|claude-code  [default: auto]\n  \
+        --limit INT             Judge at most this many prompts.\n  \
+        --min-confidence FLOAT  Keep wrong verdicts >= this  [default: 0.7]\n  \
+        --max-usd FLOAT         Hard budget cap for judging (default MJ_MAX_USD)\n  \
+        --dry-run               Parse and price judging; calls nothing.\n  \
+        --allow-paid            Explicitly permit paid judge calls within --max-usd.\n";
+    if args.iter().any(|a| a == "--help") {
+        println!("{help}");
+        return Ok(0);
+    }
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut judge_spec: Option<String> = None;
+    let mut out = PathBuf::from("suites/my-micro-eval.yaml");
+    let mut name = "my-micro-eval".to_string();
+    let mut version: Option<String> = None;
+    let mut source = "auto".to_string();
+    let mut limit: Option<usize> = None;
+    let mut min_confidence = 0.7f64;
+    let mut max_usd: Option<f64> = None;
+    let (mut dry_run, mut allow_paid) = (false, false);
+    let mut cache_path = PathBuf::from("runs/judge-cache.jsonl");
+    let mut no_cache = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].clone();
+        let take = |i: &mut usize| -> Result<String, u8> {
+            *i += 1;
+            args.get(*i)
+                .cloned()
+                .ok_or_else(|| err1("expected a value after the flag"))
+        };
+        macro_rules! take {
+            () => {
+                match take(&mut i) {
+                    Ok(v) => v,
+                    Err(code) => return Ok(code),
+                }
+            };
+        }
+        macro_rules! parsed {
+            ($e:expr, $msg:expr) => {
+                match $e {
+                    Ok(v) => v,
+                    Err(_) => return Ok(err1($msg)),
+                }
+            };
+        }
+        match a.as_str() {
+            "--dry-run" => dry_run = true,
+            "--allow-paid" => allow_paid = true,
+            "--no-cache" => no_cache = true,
+            "--cache" => cache_path = PathBuf::from(take!()),
+            "--judge" => judge_spec = Some(take!()),
+            "-o" | "--out" => out = PathBuf::from(take!()),
+            "--name" => name = take!(),
+            "--version" => version = Some(take!()),
+            "--source" => source = take!(),
+            "--limit" => limit = Some(parsed!(take!().parse(), "--limit needs an integer")),
+            "--min-confidence" => {
+                min_confidence = parsed!(take!().parse(), "--min-confidence needs a number")
+            }
+            "--max-usd" => max_usd = Some(parsed!(take!().parse(), "--max-usd needs a number")),
+            other if other.starts_with("--judge=") => judge_spec = Some(other[8..].to_string()),
+            other if other.starts_with("--cache=") => cache_path = PathBuf::from(&other[8..]),
+            other if other.starts_with("--out=") => out = PathBuf::from(&other[6..]),
+            other if other.starts_with("--name=") => name = other[7..].to_string(),
+            other if other.starts_with("--version=") => version = Some(other[10..].to_string()),
+            other if other.starts_with("--source=") => source = other[9..].to_string(),
+            other if other.starts_with("--limit=") => {
+                limit = Some(parsed!(other[8..].parse(), "--limit needs an integer"))
+            }
+            other if other.starts_with("--min-confidence=") => {
+                min_confidence = parsed!(other[17..].parse(), "--min-confidence needs a number")
+            }
+            other if other.starts_with("--max-usd=") => {
+                max_usd = Some(parsed!(other[10..].parse(), "--max-usd needs a number"))
+            }
+            other if other.starts_with('-') => return Ok(err1(format!("No such option: {other}"))),
+            other => paths.push(PathBuf::from(other)),
+        }
+        i += 1;
+    }
+    if paths.is_empty() {
+        eprintln!("error: Missing argument 'PATHS...'.");
+        return Ok(2);
+    }
+    let s = settings();
+    let env_map: BTreeMap<String, String> = std::env::vars().collect();
+    let history = match krutrim_evaluator::history::load_history(&paths, &source) {
+        Ok(h) => h,
+        Err(e) => return Ok(err1(e)),
+    };
+    let pairs = history.pairs();
+    let selection = krutrim_evaluator::miner::select_pairs(&pairs, limit);
+    let selected = &selection.pairs;
+    if selected.is_empty() {
+        return Ok(err1("no prompt/answer pairs found in that history"));
+    }
+    println!(
+        "{} conversations, {} prompts; judging {} ({} duplicates and {} oversized skipped).",
+        history.conversations.len(),
+        pairs.len(),
+        selected.len(),
+        selection.duplicates,
+        selection.oversized
+    );
+    let resolved_judge = judge_spec.or_else(|| env_map.get("MJ_JUDGE").cloned());
+    let Some(resolved_judge) = resolved_judge else {
+        return Ok(err1(
+            "a mining judge is required: pass --judge <provider>/<model> or set MJ_JUDGE \
+             (free local example: --judge ollama/llama3.2:3b)",
+        ));
+    };
+    let mut ready = true;
+    for problem in krutrim_evaluator::judge::judge_problems(&resolved_judge, &env_map) {
+        eprintln!("problem: judge: {problem}");
+        ready = false;
+    }
+    let prices = match load_prices(Some(&s.prices_path)) {
+        Ok(p) => p,
+        Err(e) => return Ok(err1(e)),
+    };
+    let mut cache = if no_cache {
+        None
+    } else {
+        Some(krutrim_evaluator::miner::VerdictCache::load(
+            cache_path.clone(),
+        ))
+    };
+    let estimate = match krutrim_evaluator::miner::estimate_judge_cost_usd(
+        &pairs,
+        &resolved_judge,
+        &prices,
+        limit,
+        cache.as_ref(),
+    ) {
+        Ok(e) => e,
+        Err(e) => return Ok(err1(e)),
+    };
+    let cap = max_usd.unwrap_or(s.max_usd);
+    match estimate {
+        None => {
+            eprintln!(
+                "problem: no price for judge {resolved_judge}; add it to prices.yaml \
+                 (see `km list prices`) so judging cost can be bounded."
+            );
+            ready = false;
+        }
+        Some(est) => {
+            println!(
+                "Judge {resolved_judge}: worst-case judging cost ${est:.4} (₹{:.2}) \
+                 against a cap of ${cap:.2} for {} prompts.",
+                est * s.usd_to_inr,
+                selected.len()
+            );
+            if est > cap {
+                eprintln!(
+                    "problem: worst-case judging cost exceeds the cap; \
+                     raise --max-usd or use --limit."
+                );
+                ready = false;
+            }
+        }
+    }
+    if dry_run {
+        println!(
+            "Dry run: nothing was called or spent; {}.",
+            if ready {
+                "a real mining would start"
+            } else {
+                "a real mining would be refused"
+            }
+        );
+        return Ok(if ready { 0 } else { 1 });
+    }
+    if !ready {
+        return Ok(err1(
+            "refusing to mine; fix the problems above (nothing was called or spent)",
+        ));
+    }
+    let estimate = estimate.expect("ready implies priced");
+    if estimate > 0.0 && !allow_paid {
+        return Ok(err1(
+            "paid judging requires --allow-paid and an approved --max-usd budget",
+        ));
+    }
+    let judge = match krutrim_evaluator::judge::make_judge(&resolved_judge, &env_map) {
+        Ok(j) => j,
+        Err(e) => return Ok(err1(e)),
+    };
+    let progress = |done: usize, total: usize, _pair: &krutrim_evaluator::history::PromptPair| {
+        if done == 1 || done == total || done % 25 == 0 {
+            println!(" judging {done}/{total}…");
+        }
+    };
+    let result = match krutrim_evaluator::miner::mine_failures(
+        &pairs,
+        &*judge,
+        &resolved_judge,
+        min_confidence,
+        limit,
+        Some(&progress),
+        cache.as_mut(),
+    ) {
+        Ok(r) => r,
+        Err(e) => return Ok(err1(e)),
+    };
+    println!(
+        "Checked {}: {} failures kept, {} right, {} unclear, {} wrong below \
+         {min_confidence} confidence, {} judge errors skipped, {} from cache, \
+         {} pairs with secrets redacted before judging.",
+        result.checked,
+        result.failures.len(),
+        result.correct,
+        result.unclear,
+        result.below_threshold,
+        result.errors,
+        result.cache_hits,
+        result.redacted_pairs
+    );
+    print_failure_breakdown(&result.failures);
+    if result.failures.is_empty() {
+        return Ok(err1(
+            "no confident failures found; no suite written. Try more history or --limit off.",
+        ));
+    }
+    let version = version.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+    match krutrim_evaluator::microeval::write_micro_eval(
+        &result.failures,
+        &out,
+        &name,
+        &version,
+        &resolved_judge,
+    ) {
+        Ok((suite, evidence_path)) => {
+            println!(
+                "Micro-eval: {} ({} tasks). Evidence: {}.",
+                out.display(),
+                suite.tasks.len(),
+                evidence_path.display()
+            );
+            println!("Keep the evidence file private: it contains your prompts and answers.");
+            println!(
+                "Run it: km run {name} -r model:<provider>/<model> --judge {resolved_judge} \
+                 --allow-paid --max-usd <budget> (free local check first: -r oracle -r echo)"
+            );
+            Ok(0)
+        }
+        Err(e) => Ok(err1(e)),
+    }
+}
+
 // ---------------- run ----------------
 
 struct RunArgs {
@@ -295,6 +784,7 @@ struct RunArgs {
     tasks: Vec<String>,
     dry_run: bool,
     allow_paid: bool,
+    judge_spec: Option<String>,
 }
 
 fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
@@ -303,6 +793,7 @@ fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
     let mut tasks = Vec::new();
     let (mut reps, mut seed, mut max_usd) = (1i64, 7i64, None);
     let (mut dry_run, mut allow_paid) = (false, false);
+    let mut judge_spec: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -314,7 +805,7 @@ fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
         };
         match a.as_str() {
             "--help" => {
-                println!("Usage: km run [OPTIONS] SUITE\n\nRun SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n\nArguments:\n  SUITE  Suite name or path  [required]\n\nOptions:\n  -r, --runner TEXT       Runner spec (repeatable)  [default: echo, oracle]\n  --repeats INT   Tries per task, 1-10  [default: 1]\n  --max-usd FLOAT         Spend cap in USD (default MJ_MAX_USD or 1.0)\n  --seed INT              Run seed  [default: 7]\n  --task TEXT             Only these task ids (repeatable)\n  --dry-run               Estimate cost and stop; runs nothing.\n  --allow-paid            Explicitly permit paid API calls after preflight.\n  --help                  Show this message and exit.\n");
+                println!("Usage: km run [OPTIONS] SUITE\n\nRun SUITE against the given runners, e.g. km run suites/example.yaml -r oracle\n\nArguments:\n  SUITE  Suite name or path  [required]\n\nOptions:\n  -r, --runner TEXT       Runner spec (repeatable)  [default: echo, oracle]\n  --repeats INT   Tries per task, 1-10  [default: 1]\n  --max-usd FLOAT         Spend cap in USD (default MJ_MAX_USD or 1.0)\n  --seed INT              Run seed  [default: 7]\n  --task TEXT             Only these task ids (repeatable)\n  --dry-run               Estimate cost and stop; runs nothing.\n  --allow-paid            Explicitly permit paid API calls after preflight.\n  --judge TEXT            Grading judge as <provider>/<model> (default MJ_JUDGE or the suite's judge).\n  --help                  Show this message and exit.\n");
                 return Ok(None);
             }
             "--dry-run" => dry_run = true,
@@ -338,6 +829,8 @@ fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
                 )
             }
             "--task" => tasks.push(take(&mut i)?),
+            "--judge" => judge_spec = Some(take(&mut i)?),
+            other if other.starts_with("--judge=") => judge_spec = Some(other[8..].to_string()),
             other if other.starts_with("--runner=") => runners.push(other[9..].to_string()),
             other if other.starts_with("--task=") => tasks.push(other[7..].to_string()),
             other if other.starts_with("--seed=") => {
@@ -385,6 +878,7 @@ fn parse_run_args(args: &[String]) -> Result<Option<RunArgs>, u8> {
         tasks,
         dry_run,
         allow_paid,
+        judge_spec,
     }))
 }
 
@@ -425,6 +919,74 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
         Err(e) => return Ok(err1(e)),
     };
     let cap = parsed.max_usd.unwrap_or(s.max_usd);
+    // Resolve the grading judge like the Python CLI: --judge, then MJ_JUDGE,
+    // then the suite's recorded judge_model. No judge = llm_judge stays pending.
+    let env_map: BTreeMap<String, String> = std::env::vars().collect();
+    let needs_judge: Vec<&Task> = selected
+        .iter()
+        .filter(|t| t.grader.kind() == "llm_judge")
+        .collect();
+    let mut resolved_judge = parsed
+        .judge_spec
+        .clone()
+        .or_else(|| env_map.get("MJ_JUDGE").cloned());
+    if resolved_judge.is_none() && !needs_judge.is_empty() {
+        resolved_judge = needs_judge.iter().find_map(|t| match &t.grader {
+            krutrim_evaluator::suite::GraderSpec::LlmJudge { judge_model, .. } => {
+                judge_model.clone()
+            }
+            _ => None,
+        });
+    }
+    let mut judge_box: Option<Box<krutrim_evaluator::judge::JudgeFn>> = None;
+    let mut judge_paid = false;
+    let mut judge_worst_usd: Option<f64> = Some(0.0);
+    if let Some(spec) = &resolved_judge {
+        if !needs_judge.is_empty() {
+            let problems = krutrim_evaluator::judge::judge_problems(spec, &env_map);
+            if !problems.is_empty() {
+                return Ok(err1(format!(
+                    "judge '{spec}' cannot run: {}",
+                    problems.join("; ")
+                )));
+            }
+            match krutrim_evaluator::judge::parse_judge_spec(spec) {
+                Ok((provider, model)) => {
+                    let price = prices.lookup(provider, model);
+                    judge_paid = price
+                        .map(|p| p.input > 0.0 || p.output > 0.0)
+                        .unwrap_or(true);
+                    judge_worst_usd = price.map(|p| {
+                        let calls = (needs_judge.len() * runners.len()) as f64 * parsed.reps as f64;
+                        let per_call_in = needs_judge
+                            .iter()
+                            .map(|t| {
+                                krutrim_evaluator::pricing::max_input_tokens(&format!(
+                                    "{}{}{}",
+                                    t.render_prompt(),
+                                    t.rubric.as_deref().unwrap_or(""),
+                                    t.reference.as_deref().unwrap_or("")
+                                )) + t.max_output_tokens
+                            })
+                            .max()
+                            .unwrap_or(0);
+                        calls
+                            * p.cost(
+                                per_call_in,
+                                krutrim_evaluator::judge::DEFAULT_JUDGE_MAX_TOKENS,
+                            )
+                    });
+                }
+                Err(e) => return Ok(err1(e)),
+            }
+            match krutrim_evaluator::judge::make_judge(spec, &env_map) {
+                Ok(j) => judge_box = Some(j),
+                Err(e) => return Ok(err1(e)),
+            }
+        }
+    } else if parsed.judge_spec.is_some() && needs_judge.is_empty() {
+        println!("--judge given but no selected task uses an LLM judge; ignoring it.");
+    }
     let check = krutrim_evaluator::preflight(&selected, &runners, cap, parsed.reps);
     let mut rows: Vec<Vec<String>> = Vec::new();
     for runner in &runners {
@@ -483,21 +1045,55 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
     for problem in &check.problems {
         eprintln!("problem: {problem}");
     }
+    if let Some(spec) = &resolved_judge {
+        if judge_box.is_some() {
+            match judge_worst_usd {
+                None => eprintln!(
+                    "problem: no price for judge {spec}; grading cost cannot be bounded \
+                     (add it to prices.yaml)."
+                ),
+                Some(jw) => {
+                    let total = check.worst_case_usd + jw;
+                    println!(
+                        "Grading judge: {spec} ({} task(s)), worst case ${jw:.4} (₹{:.2}); \
+                         total worst case ${total:.4} against the ${cap:.2} cap.",
+                        needs_judge.len(),
+                        jw * s.usd_to_inr
+                    );
+                    if total > cap {
+                        eprintln!(
+                            "problem: runners + grading judge exceed the cap; \
+                             raise --max-usd or run fewer tasks/runners."
+                        );
+                    }
+                }
+            }
+        }
+    } else if !needs_judge.is_empty() {
+        eprintln!(
+            "warning: {} task(s) need an LLM judge and none is configured; they will be \
+             left 'pending'. Pass --judge <provider>/<model>.",
+            needs_judge.len()
+        );
+    }
+    let judge_ok = judge_worst_usd
+        .map(|jw| check.worst_case_usd + jw <= cap)
+        .unwrap_or(false);
     if parsed.dry_run {
-        let verdict = if check.ok() {
+        let verdict = if check.ok() && judge_ok {
             "a real run would start"
         } else {
             "a real run would be refused"
         };
         println!("Dry run: nothing was called or spent; {verdict}.");
-        return Ok(if check.ok() { 0 } else { 1 });
+        return Ok(if check.ok() && judge_ok { 0 } else { 1 });
     }
-    if !check.ok() {
+    if !check.ok() || !judge_ok {
         return Ok(err1(
             "refusing to run; fix the problems above (nothing was called or spent)",
         ));
     }
-    if !parsed.allow_paid && check.worst_case_usd > 0.0 {
+    if !parsed.allow_paid && (check.worst_case_usd > 0.0 || judge_paid) {
         return Ok(err1(
             "paid execution requires --allow-paid and an approved --max-usd budget",
         ));
@@ -568,6 +1164,7 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
         on_start: Some(&on_start),
         on_attempt: Some(&on_attempt),
         on_result: Some(&on_result),
+        judge: judge_box.as_deref(),
     };
     match run_suite(
         &suite,

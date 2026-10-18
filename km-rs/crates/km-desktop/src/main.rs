@@ -302,7 +302,7 @@ impl Session {
                 .unwrap_or(std::time::UNIX_EPOCH);
             mine.push((modified, suite));
         }
-        mine.sort_by(|a, b| b.0.cmp(&a.0));
+        mine.sort_by_key(|x| std::cmp::Reverse(x.0));
         suites.extend(mine.into_iter().map(|(_, s)| s));
         Ok(suites)
     }
@@ -662,7 +662,11 @@ fn pretty_model(model: &str) -> String {
                 && rest.len() <= 1
                 && rest.iter().all(numeric) =>
         {
-            let mut name = format!("Claude {}{} {major}", family[..1].to_uppercase(), &family[1..]);
+            let mut name = format!(
+                "Claude {}{} {major}",
+                family[..1].to_uppercase(),
+                &family[1..]
+            );
             if let Some(minor) = rest.first() {
                 name.push('.');
                 name.push_str(minor);
@@ -789,7 +793,10 @@ impl Session {
             .map(str::to_string)
             .unwrap_or_else(|| format!("ask-{}", tokens::random_token().unwrap_or_default()));
         let stop = Arc::new(AtomicBool::new(false));
-        self.asks.lock().unwrap().insert(ask_id.clone(), stop.clone());
+        self.asks
+            .lock()
+            .unwrap()
+            .insert(ask_id.clone(), stop.clone());
         let base = live::openrouter_base();
         let workers: Vec<_> = models
             .into_iter()
@@ -859,10 +866,16 @@ fn live_worker(
     };
     let flush = |answer: &mut String, thinking: &mut String| {
         if !thinking.is_empty() {
-            send("text", json!({"text": std::mem::take(thinking), "thinking": true}));
+            send(
+                "text",
+                json!({"text": std::mem::take(thinking), "thinking": true}),
+            );
         }
         if !answer.is_empty() {
-            send("text", json!({"text": std::mem::take(answer), "thinking": false}));
+            send(
+                "text",
+                json!({"text": std::mem::take(answer), "thinking": false}),
+            );
         }
     };
     send("start", json!({"model": model}));
@@ -870,10 +883,14 @@ fn live_worker(
     let mut last = Instant::now();
     let metrics = live::stream_chat(base, key, model, prompt, stop, &mut |event| match event {
         live::LiveEvent::Connected(at) => send("connected", json!({"at": at})),
-        live::LiveEvent::First { at, thinking: is_thinking } => {
-            send("first", json!({"at": at, "thinking": is_thinking}))
-        }
-        live::LiveEvent::Text { text, thinking: is_thinking } => {
+        live::LiveEvent::First {
+            at,
+            thinking: is_thinking,
+        } => send("first", json!({"at": at, "thinking": is_thinking})),
+        live::LiveEvent::Text {
+            text,
+            thinking: is_thinking,
+        } => {
             if is_thinking {
                 thinking.push_str(text);
             } else {
@@ -959,6 +976,7 @@ impl Session {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_inner(
         &self,
         loaded: &Suite,
@@ -1005,6 +1023,7 @@ impl Session {
             on_start: Some(&on_start),
             on_attempt: Some(&on_attempt),
             on_result: Some(&on_result),
+            judge: None,
         };
         let store = Store::open(&settings.db_path)?;
         let summary = run_suite(
@@ -1363,7 +1382,11 @@ impl Session {
         if questions.len() > MAX_QUESTIONS {
             return Err(format!("A test can have up to {MAX_QUESTIONS} questions."));
         }
-        let id = match params.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        let id = match params
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
             Some(existing) => self.mine_named(existing)?.name,
             None => {
                 let token = tokens::random_token()?;
@@ -1387,10 +1410,14 @@ impl Session {
                 return Err(format!("Question {n} is empty."));
             }
             if question.chars().count() > MAX_QUESTION_CHARS {
-                return Err(format!("Question {n} is too long. Keep it under {MAX_QUESTION_CHARS} letters."));
+                return Err(format!(
+                    "Question {n} is too long. Keep it under {MAX_QUESTION_CHARS} letters."
+                ));
             }
             if question.contains('\0') || answer.contains('\0') {
-                return Err(format!("Question {n} has a character that cannot be saved."));
+                return Err(format!(
+                    "Question {n} has a character that cannot be saved."
+                ));
             }
             if !suite::placeholder_names(&question).is_empty() {
                 return Err(format!(
@@ -1440,8 +1467,7 @@ impl Session {
             "name": id, "version": "1", "description": name,
             "validation_status": "unvalidated_pilot", "tasks": tasks});
         let dir = self.my_tests_dir();
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("Could not save the test: {e}"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("Could not save the test: {e}"))?;
         let target = dir.join(format!("{id}.yaml"));
         let draft = dir.join(format!(".{id}.draft"));
         let text = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
@@ -1496,17 +1522,19 @@ impl Session {
             };
             costs.insert(spec, cost);
         }
-        Ok(json!({"usd_to_inr": self.settings.usd_to_inr, "repeats": repeats,
-                  "questions": suite.tasks.len(), "costs": costs}))
+        Ok(
+            json!({"usd_to_inr": self.settings.usd_to_inr, "repeats": repeats,
+                  "questions": suite.tasks.len(), "costs": costs}),
+        )
     }
 
     /// What each AI said, next to the right answer. Only for tests people
     /// wrote themselves; ready-made pilot prompts and answers stay hidden.
     fn answers(&self, run_id: &str) -> Result<Value, String> {
         let (run, _) = self.run_or_raise(run_id)?;
-        let suite = self
-            .load_named(&run.suite_name)
-            .map_err(|_| "This test was deleted, so its questions are no longer here.".to_string())?;
+        let suite = self.load_named(&run.suite_name).map_err(|_| {
+            "This test was deleted, so its questions are no longer here.".to_string()
+        })?;
         if !self.is_mine(&suite) {
             return Err("Answers are shown only for tests you wrote yourself.".into());
         }
@@ -1516,7 +1544,10 @@ impl Session {
         let mut labels = BTreeMap::new();
         for model in payload["models"].as_array().cloned().unwrap_or_default() {
             let id = model["runner_id"].as_str().unwrap_or_default().to_string();
-            let label = model["configuration_name"].as_str().unwrap_or(&id).to_string();
+            let label = model["configuration_name"]
+                .as_str()
+                .unwrap_or(&id)
+                .to_string();
             labels.insert(id, label);
         }
         let hashes: BTreeMap<String, String> = suite
@@ -2103,7 +2134,9 @@ fn dispatch(session: &Arc<Session>, request: &Value, emit: &Emit) {
             "list_runs" => Value::Array(session.list_runs()),
             "share_card" => session.share_card(&run_id_param())?,
             "pack_costs" => session.pack_costs(params)?,
-            "get_test" => session.get_test(params.get("id").and_then(|v| v.as_str()).unwrap_or(""))?,
+            "get_test" => {
+                session.get_test(params.get("id").and_then(|v| v.as_str()).unwrap_or(""))?
+            }
             "save_test" => session.save_test(params)?,
             "delete_test" => {
                 session.delete_test(params.get("id").and_then(|v| v.as_str()).unwrap_or(""))?
@@ -2193,10 +2226,14 @@ mod tests {
 
     #[test]
     fn includes_answers_match_literally_and_round_trip() {
-        for answer in ["Jaipur", "(a) ₹5 [x] .*+?", "a|b ^$ {1} #&-~ \\n", "मंगलवार"] {
+        for answer in ["Jaipur", "(a) ₹5 [x] .*+?", "a|b ^$ {1} #&-~ \\n", "मंगलवार"]
+        {
             let pattern = format!(".*{}.*", regex_escape(answer));
             let built = regex::Regex::new(&format!("^(?:{pattern})$")).unwrap();
-            assert!(built.is_match(&format!("The answer is {answer}.")), "{answer}");
+            assert!(
+                built.is_match(&format!("The answer is {answer}.")),
+                "{answer}"
+            );
             assert!(!built.is_match("something else"), "{answer}");
             assert_eq!(regex_unescape(&regex_escape(answer)), answer);
         }
@@ -2208,13 +2245,22 @@ mod tests {
         assert_eq!(pretty_model("claude-opus-5"), "Claude Opus 5");
         assert_eq!(pretty_model("claude-fable-5-1"), "Claude Fable 5.1");
         assert_eq!(pretty_model("gpt-4.1-mini"), "gpt-4.1-mini");
-        assert_eq!(pretty_model("claude-3-5-sonnet-20241022"), "claude-3-5-sonnet-20241022");
+        assert_eq!(
+            pretty_model("claude-3-5-sonnet-20241022"),
+            "claude-3-5-sonnet-20241022"
+        );
     }
 
     #[test]
     fn short_answer_requests_are_hidden_from_the_question() {
-        assert_eq!(strip_suffix(&format!("How much?{NUMBER_SUFFIX}")), "How much?");
-        assert_eq!(strip_suffix(&format!("Which day?{EXACT_SUFFIX}")), "Which day?");
+        assert_eq!(
+            strip_suffix(&format!("How much?{NUMBER_SUFFIX}")),
+            "How much?"
+        );
+        assert_eq!(
+            strip_suffix(&format!("Which day?{EXACT_SUFFIX}")),
+            "Which day?"
+        );
         assert_eq!(short_title("  \n First line\nsecond"), "First line");
         assert_eq!(short_title(&"x".repeat(80)).chars().count(), 71);
     }

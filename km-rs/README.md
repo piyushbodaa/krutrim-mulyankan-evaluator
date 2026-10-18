@@ -7,8 +7,10 @@ parity with them is tested (see below).
 
 ```
 crates/evaluator   suites, engine, graders, store (same SQLite v3 file),
-                   pricing, verdicts/statistics, report, export, provenance
-crates/km          the `km` CLI (list, run, import-suite, export, report)
+                   pricing, verdicts/statistics, report, export, provenance,
+                   history import, failure miner, micro-eval builder, judge
+crates/km          the `km` CLI (history, micro-eval, list, run [--judge],
+                   import-suite, export, report)
 crates/km-desktop  the desktop engine: JSON-lines stdio protocol for the
                    Tauri shell, loopback results dashboard, `--http` preview
 ```
@@ -22,12 +24,21 @@ cargo build --release --manifest-path km-rs/Cargo.toml -p km-cli \
 cargo test --manifest-path km-rs/Cargo.toml
 ```
 
-Local Linux x86-64 GNU release measurements for v0.3.0: `km` is 5,796,360
-bytes and `km-desktop` is 4,912,968 bytes before desktop resources. Across 20
-warm `km --help` process launches, median startup was 2.07 ms; one free
-`example` oracle/echo run took 38.38 ms. These measure software overhead on one
-machine, not model speed or Windows/macOS performance. Download sizes vary by
-platform and system webview packaging.
+Local Linux x86-64 GNU release measurements, v0.4.0 with the history/mining
+pipeline, 2026-10-18, median of repeated warm runs on one machine (software
+overhead only, not model speed):
+
+| Measurement | Rust `km` | Python `km` |
+|---|---|---|
+| Binary / environment size | 7.3 MB single binary | ~96 MB virtualenv |
+| `km --help` startup | 0.8 ms | 1,106 ms |
+| `km run example` (oracle+echo) | 16 ms | — |
+| `km history` on 337 MB of Claude Code sessions | 586 ms | 2,547 ms |
+
+The release profile uses `opt-level = 2` (measured fastest on the history
+parse; `"z"` was 5.91 MB but 26% slower there, `3` was 8.38 MB and no
+faster), fat LTO, one codegen unit, and stripping. The shipped Linux CLI is
+the Musl static build; CI builds and smoke-tests it on every change.
 
 ## Parity
 
@@ -36,33 +47,6 @@ platform and system webview packaging.
   `report.md` after removing volatile fields.
 - `crates/evaluator/tests/parity_units.rs` pins CPython-compatible pieces:
   task content hashes, derived seeds, and the seeded bootstrap intervals.
-
-## Windows and macOS downloads
-
-Native CI produces `km-windows-x86_64.zip`, `km-macos-aarch64.tar.gz` (Apple Silicon),
-and `km-macos-x86_64.tar.gz` (Intel), alongside the Linux archive. Each contains the
-binary and `suites/`; the shipped synthetic suites are also embedded in the binary.
-The same evaluator crate powers every desktop installer.
-
-After extracting the Windows ZIP, open PowerShell in that folder:
-
-```powershell
-.\km.exe --help
-.\km.exe run example -r oracle -r echo
-.\km.exe
-```
-
-On a Mac, extract the matching archive and run:
-
-```sh
-./km --help
-./km run example -r oracle -r echo
-./km
-```
-
-The final command opens the terminal interface when attached to a terminal.
-No Python or Rust installation is needed. The mock controls above are free and
-are software checks, not AI benchmark results.
 
 ## Current interfaces
 

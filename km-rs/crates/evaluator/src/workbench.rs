@@ -231,7 +231,7 @@ impl ConfigurationRegistry {
             app_context,
             origin: "user_created".into(),
         };
-        self.ensure(&[config.clone()], true)?;
+        self.ensure(std::slice::from_ref(&config), true)?;
         Ok(config)
     }
 
@@ -354,6 +354,7 @@ fn state_request(state: &Value) -> Result<JobRequest, String> {
     JobRequest::from_value(state.get("request").unwrap_or(&Value::Null))
 }
 
+#[allow(clippy::type_complexity)]
 pub struct JobManager {
     parent: Arc<PilotService>,
     directory: PathBuf,
@@ -735,7 +736,7 @@ impl JobManager {
             .get("run_id")
             .and_then(Value::as_str)
             .ok_or_else(|| "No evaluator run exists yet".to_string())?;
-        let store = Store::open(&self.parent.settings.db_path).map_err(|e| e)?;
+        let store = Store::open(&self.parent.settings.db_path)?;
         let mut payload = crate::export::result_export(&store, run_id, outputs)?.value;
         if outputs {
             let mut explanations = Map::new();
@@ -859,33 +860,32 @@ impl JobManager {
             on_start: Some(&on_start),
             on_attempt: Some(&on_attempt),
             on_result: Some(&on_result),
+            judge: None,
         };
         let settings = self.parent.settings.clone();
-        let outcome = Store::open(&settings.db_path)
-            .map_err(|e| e)
-            .and_then(|store| {
-                let suite = self.parent.suite(&request.suite)?.clone();
-                let summary = run_suite(
-                    &suite,
-                    runners,
-                    &store,
-                    &settings,
-                    request.seed as i64,
-                    request.repeats as i64,
-                    Some(0.0),
-                    Some(&request.task_ids),
-                    &callbacks,
-                    Some(cancel.clone()),
-                )
-                .map_err(|e| e.to_string())?;
-                let _ = crate::export::write_export(
-                    &store,
-                    &summary.run_id,
-                    &summary.run_dir.join("results.json"),
-                    false,
-                );
-                Ok(summary)
-            });
+        let outcome = Store::open(&settings.db_path).and_then(|store| {
+            let suite = self.parent.suite(&request.suite)?.clone();
+            let summary = run_suite(
+                &suite,
+                runners,
+                &store,
+                &settings,
+                request.seed as i64,
+                request.repeats as i64,
+                Some(0.0),
+                Some(&request.task_ids),
+                &callbacks,
+                Some(cancel.clone()),
+            )
+            .map_err(|e| e.to_string())?;
+            let _ = crate::export::write_export(
+                &store,
+                &summary.run_id,
+                &summary.run_dir.join("results.json"),
+                false,
+            );
+            Ok(summary)
+        });
         let mut states = self.states.lock().unwrap();
         if let Some(state) = states.get_mut(identity) {
             match outcome {
@@ -1433,7 +1433,7 @@ impl PilotService {
         let bundle = parse_comparison_bundle(body).map_err(WorkError::Bad)?;
         let suite = self.suite(&bundle.suite).map_err(WorkError::Bad)?.clone();
         let item = suite
-            .select(Some(&[bundle.task_id.clone()]))
+            .select(Some(std::slice::from_ref(&bundle.task_id)))
             .map_err(WorkError::Bad)?
             .into_iter()
             .next()
@@ -1482,7 +1482,7 @@ impl PilotService {
             12,
             1,
             Some(0.0),
-            Some(&[item.id.clone()]),
+            Some(std::slice::from_ref(&item.id)),
             &crate::RunCallbacks::default(),
             None,
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import date
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -15,7 +16,16 @@ from rich.table import Table
 
 from kritrim_mulyankan.engine import MAX_REPEATS, PreflightError, preflight, run_suite
 from kritrim_mulyankan.export import write_export
+from kritrim_mulyankan.history import load_history
 from kritrim_mulyankan.importer import import_suite
+from kritrim_mulyankan.judge import judge_problems, make_judge, parse_judge_spec
+from kritrim_mulyankan.microeval import write_micro_eval
+from kritrim_mulyankan.miner import (
+    VerdictCache,
+    estimate_judge_cost_usd,
+    mine_failures,
+    select_pairs,
+)
 from kritrim_mulyankan.pricing import load_prices
 from kritrim_mulyankan.report import (
     LEADERBOARD_HEADERS,
@@ -194,6 +204,13 @@ def run(
     allow_paid: Annotated[
         bool, typer.Option(help="Explicitly permit paid API calls after preflight.")
     ] = False,
+    judge_spec: Annotated[
+        str | None,
+        typer.Option(
+            "--judge",
+            help="Grading judge as <provider>/<model> (default MJ_JUDGE or the suite's judge).",
+        ),
+    ] = None,
 ) -> None:
     """Run a suite against one or more runners, grade, store and report."""
     settings = Settings.from_env()
@@ -207,6 +224,41 @@ def run(
     if len({r.name for r in runners}) != len(runners):
         _fail("the same runner was given twice")
     cap = settings.max_usd if max_usd is None else max_usd
+
+    # Resolve the grading judge: --judge wins, then MJ_JUDGE, then the suite's own
+    # judge_model (micro-evals record theirs). Without one, llm_judge tasks stay
+    # 'pending' exactly as before; nothing is guessed.
+    needs_judge = [t for t in tasks if t.grader.type == "llm_judge"]
+    resolved_judge = judge_spec or os.environ.get("MJ_JUDGE")
+    if needs_judge and not resolved_judge:
+        first = next((t for t in needs_judge if t.grader.judge_model), None)
+        resolved_judge = first.grader.judge_model if first is not None else None
+    judge = None
+    judge_paid = False
+    judge_worst_usd: float | None = 0.0
+    if resolved_judge and needs_judge:
+        problems = judge_problems(resolved_judge)
+        if problems:
+            _fail(f"judge {resolved_judge!r} cannot run: {'; '.join(problems)}")
+        provider, model = parse_judge_spec(resolved_judge)
+        price = prices.lookup(provider, model)
+        judge_paid = price is None or (price.input > 0 or price.output > 0)
+        if price is None:
+            judge_worst_usd = None  # unbounded judge refuses like an unpriced runner
+        else:
+            from kritrim_mulyankan.judge import DEFAULT_JUDGE_MAX_TOKENS
+            from kritrim_mulyankan.pricing import max_input_tokens
+
+            calls = len(needs_judge) * len(runners) * repeats
+            per_call_in = max(
+                max_input_tokens(t.render_prompt() + (t.rubric or "") + (t.reference or ""))
+                + t.max_output_tokens
+                for t in needs_judge
+            )
+            judge_worst_usd = calls * price.cost(per_call_in, DEFAULT_JUDGE_MAX_TOKENS)
+        judge = make_judge(resolved_judge)
+    elif judge_spec and not needs_judge:
+        console.print("--judge given but no selected task uses an LLM judge; ignoring it.")
 
     # Always check first: keys, prices and the worst case against the cap. Nothing is called.
     check = preflight(tasks, runners, cap, repeats=repeats)
@@ -232,13 +284,41 @@ def run(
         err.print(f"[yellow]warning:[/yellow] {escape(warning)}")
     for problem in check.problems:
         err.print(f"[red]problem:[/red] {escape(problem)}")
+    if judge is not None:
+        if judge_worst_usd is None:
+            err.print(
+                f"[red]problem:[/red] no price for judge {resolved_judge}; grading cost "
+                "cannot be bounded (add it to prices.yaml)."
+            )
+        else:
+            total_worst = check.worst_case_usd + judge_worst_usd
+            console.print(
+                f"Grading judge: {resolved_judge} ({len(needs_judge)} task(s)), worst case "
+                f"${judge_worst_usd:.4f} (₹{judge_worst_usd * settings.usd_to_inr:.2f}); "
+                f"total worst case ${total_worst:.4f} against the ${cap:.2f} cap."
+            )
+            if total_worst > cap:
+                err.print(
+                    "[red]problem:[/red] runners + grading judge exceed the cap; "
+                    "raise --max-usd or run fewer tasks/runners."
+                )
+    elif needs_judge:
+        err.print(
+            f"[yellow]warning:[/yellow] {len(needs_judge)} task(s) need an LLM judge and none "
+            "is configured; they will be left 'pending'. Pass --judge <provider>/<model>."
+        )
+    judge_ok = judge_worst_usd is not None and (
+        check.worst_case_usd + (judge_worst_usd or 0.0) <= cap
+    )
     if dry_run:
-        verdict = "a real run would start" if check.ok else "a real run would be refused"
+        verdict = (
+            "a real run would start" if check.ok and judge_ok else "a real run would be refused"
+        )
         console.print(f"Dry run: nothing was called or spent; {verdict}.")
-        raise typer.Exit(0 if check.ok else 1)
-    if not check.ok:
+        raise typer.Exit(0 if check.ok and judge_ok else 1)
+    if not check.ok or not judge_ok:
         _fail("refusing to run; fix the problems above (nothing was called or spent)")
-    if not allow_paid and check.worst_case_usd > 0:
+    if not allow_paid and (check.worst_case_usd > 0 or judge_paid):
         _fail("paid execution requires --allow-paid and an approved --max-usd budget")
 
     def progress(r: ResultRecord) -> None:
@@ -260,6 +340,7 @@ def run(
                 repeats=repeats,
                 max_usd=cap,
                 task_ids=task,
+                judge=judge,
                 on_result=progress,
             )
         except PreflightError as exc:
@@ -291,6 +372,253 @@ def import_cmd(
     except (OSError, ValueError) as exc:
         _fail(str(exc))
     console.print(f"Imported {len(suite.tasks)} items to {destination} (unvalidated pilot).")
+
+
+class HistorySource(StrEnum):
+    auto = "auto"
+    chatgpt = "chatgpt"
+    claude = "claude"
+    claude_code = "claude-code"
+
+
+def _history_source(value: HistorySource):  # noqa: ANN202 - Literal for load_history
+    return "claude_code" if value is HistorySource.claude_code else value.value
+
+
+@app.command("history")
+def history_cmd(
+    paths: Annotated[
+        list[Path], typer.Argument(help="Export files/zips, or Claude Code *.jsonl / folder.")
+    ],
+    source: Annotated[
+        HistorySource, typer.Option("--source", help="Format (default: auto-detect).")
+    ] = HistorySource.auto,
+) -> None:
+    """Inspect your own chat history exports offline. Counts only; prints no content."""
+    try:
+        history = load_history(paths, _history_source(source))
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        _fail(str(exc))
+    pairs = history.pairs
+    table = Table("Source", "Conversations", "Prompts with an answer")
+    pair_counts: dict[str, int] = {}
+    for pair in pairs:
+        pair_counts[pair.source] = pair_counts.get(pair.source, 0) + 1
+    for src, count in sorted(history.by_source().items()):
+        table.add_row(src, str(count), str(pair_counts.get(src, 0)))
+    console.print(table)
+    console.print(
+        f"Total: {len(history.conversations)} conversations, {len(pairs)} prompts. "
+        "Nothing was uploaded or called."
+    )
+
+
+def _print_failure_breakdown(failures) -> None:  # noqa: ANN001
+    if not failures:
+        return
+    from collections import Counter
+
+    by_source = Counter(f.pair.source for f in failures)
+    by_model = Counter(f.pair.model or "unknown model" for f in failures)
+    table = Table("Failures by", "Count", title="Where your AI went wrong")
+    for src, count in by_source.most_common():
+        table.add_row(f"source: {src}", str(count))
+    for model, count in by_model.most_common():
+        table.add_row(f"original model: {model}", str(count))
+    console.print(table)
+
+
+@app.command("micro-eval")
+def micro_eval_cmd(
+    paths: Annotated[
+        list[Path], typer.Argument(help="Your exports: ChatGPT/Claude zip or Claude Code data.")
+    ],
+    judge_spec: Annotated[
+        str | None,
+        typer.Option("--judge", help="Mining judge as <provider>/<model> (default MJ_JUDGE)."),
+    ] = None,
+    out: Annotated[Path, typer.Option("--out", "-o", help="Suite YAML to create.")] = Path(
+        "suites/my-micro-eval.yaml"
+    ),
+    name: Annotated[str, typer.Option(help="Suite name.")] = "my-micro-eval",
+    version: Annotated[str | None, typer.Option(help="Suite version (default: today).")] = None,
+    source: Annotated[
+        HistorySource, typer.Option("--source", help="Format (default: auto-detect).")
+    ] = HistorySource.auto,
+    limit: Annotated[
+        int | None, typer.Option("--limit", min=1, help="Judge at most this many prompts.")
+    ] = None,
+    min_confidence: Annotated[
+        float,
+        typer.Option("--min-confidence", min=0.0, max=1.0, help="Keep wrong verdicts >= this."),
+    ] = 0.7,
+    max_usd: Annotated[
+        float | None, typer.Option(help="Hard budget cap for judging (default MJ_MAX_USD).")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Parse and price judging; calls nothing.")
+    ] = False,
+    allow_paid: Annotated[
+        bool, typer.Option(help="Explicitly permit paid judge calls within --max-usd.")
+    ] = False,
+    cache_path: Annotated[
+        Path, typer.Option("--cache", help="Verdict cache file (re-runs are free).")
+    ] = Path("runs/judge-cache.jsonl"),
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Do not use the verdict cache.")
+    ] = False,
+) -> None:
+    """Mine prompts your AI answered wrongly and build them into a personal suite."""
+    settings = Settings.from_env()
+    try:
+        history = load_history(paths, _history_source(source))
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        _fail(str(exc))
+    pairs = history.pairs
+    selection = select_pairs(pairs, limit)
+    selected = selection.pairs
+    if not selected:
+        _fail("no prompt/answer pairs found in that history")
+    console.print(
+        f"{len(history.conversations)} conversations, {len(pairs)} prompts; "
+        f"judging {len(selected)} "
+        f"({selection.duplicates} duplicates and {selection.oversized} oversized skipped)."
+    )
+    resolved_judge = judge_spec or os.environ.get("MJ_JUDGE")
+    if not resolved_judge:
+        _fail(
+            "a mining judge is required: pass --judge <provider>/<model> or set MJ_JUDGE "
+            "(free local example: --judge ollama/llama3.2:3b)"
+        )
+    problems = judge_problems(resolved_judge)
+    for problem in problems:
+        err.print(f"[red]problem:[/red] judge: {escape(problem)}")
+    cache = None if no_cache else VerdictCache(cache_path)
+    try:
+        prices = load_prices(settings.prices_path)
+        estimate = estimate_judge_cost_usd(pairs, resolved_judge, prices, limit=limit, cache=cache)
+    except ValueError as exc:
+        _fail(str(exc))
+    cap = settings.max_usd if max_usd is None else max_usd
+    if estimate is None:
+        err.print(
+            f"[red]problem:[/red] no price for judge {resolved_judge}; add it to prices.yaml "
+            "(see `km list prices`) so judging cost can be bounded."
+        )
+    else:
+        console.print(
+            f"Judge {resolved_judge}: worst-case judging cost ${estimate:.4f} "
+            f"(₹{estimate * settings.usd_to_inr:.2f}) against a cap of ${cap:.2f} "
+            f"for {len(selected)} prompts."
+        )
+        if estimate > cap:
+            err.print(
+                "[red]problem:[/red] worst-case judging cost exceeds the cap; "
+                "raise --max-usd or use --limit."
+            )
+    ready = not problems and estimate is not None and estimate <= cap
+    if dry_run:
+        console.print(
+            "Dry run: nothing was called or spent; "
+            + ("a real mining would start." if ready else "a real mining would be refused.")
+        )
+        raise typer.Exit(0 if ready else 1)
+    if not ready:
+        _fail("refusing to mine; fix the problems above (nothing was called or spent)")
+    assert estimate is not None
+    if estimate > 0 and not allow_paid:
+        _fail("paid judging requires --allow-paid and an approved --max-usd budget")
+
+    def progress(done: int, total: int, _pair) -> None:  # noqa: ANN001
+        if done == 1 or done == total or done % 25 == 0:
+            console.print(f" judging {done}/{total}…")
+
+    result = mine_failures(
+        pairs,
+        make_judge(resolved_judge),
+        judge_spec=resolved_judge,
+        min_confidence=min_confidence,
+        limit=limit,
+        on_progress=progress,
+        cache=cache,
+    )
+    console.print(
+        f"Checked {result.checked}: {len(result.failures)} failures kept, "
+        f"{result.correct} right, {result.unclear} unclear, "
+        f"{result.below_threshold} wrong below {min_confidence} confidence, "
+        f"{result.errors} judge errors skipped, {result.cache_hits} from cache, "
+        f"{result.redacted_pairs} pairs with secrets redacted before judging."
+    )
+    _print_failure_breakdown(result.failures)
+    if not result.failures:
+        _fail("no confident failures found; no suite written. Try more history or --limit off.")
+    try:
+        suite, evidence_path = write_micro_eval(
+            result.failures,
+            out,
+            name=name,
+            version=version or date.today().isoformat(),
+            judge_spec=resolved_judge,
+        )
+    except (OSError, ValueError) as exc:
+        _fail(str(exc))
+    console.print(f"Micro-eval: {out} ({len(suite.tasks)} tasks). Evidence: {evidence_path}.")
+    console.print("Keep the evidence file private: it contains your original prompts/answers.")
+    console.print(
+        f"Run it: km run {name} -r model:<provider>/<model> --judge {resolved_judge} "
+        "--allow-paid --max-usd <budget> (free local check first: -r oracle -r echo)"
+    )
+
+
+@app.command("doctor")
+def doctor_cmd() -> None:
+    """Check suites, prices, keys and the local judge path. Calls no model APIs."""
+    settings = Settings.from_env()
+    rows: list[tuple[str, str]] = []
+    hard_fail = False
+    paths = discover_suites(settings.suites_dir)
+    loaded = 0
+    for path in paths:
+        try:
+            load_suite(path)
+            loaded += 1
+        except ValueError as exc:
+            rows.append((f"suite {path.name}", f"BROKEN: {exc}"))
+            hard_fail = True
+    rows.append(("suites", f"{loaded}/{len(paths)} load from {settings.suites_dir}/"))
+    try:
+        prices = load_prices(settings.prices_path)
+        rows.append(("prices", f"{len(prices)} priced models"))
+    except ValueError as exc:
+        rows.append(("prices", f"BROKEN: {exc}"))
+        hard_fail = True
+        prices = None  # type: ignore[assignment]
+    from kritrim_mulyankan.runners.providers import PROVIDERS, credentials_problem
+
+    ready, missing = [], []
+    for provider in sorted(PROVIDERS):
+        (missing if credentials_problem(provider, os.environ) else ready).append(provider)
+    rows.append(("providers ready", ", ".join(ready) or "none"))
+    rows.append(("providers missing keys", ", ".join(missing) or "none"))
+    judge = os.environ.get("MJ_JUDGE")
+    if judge:
+        problems = judge_problems(judge)
+        rows.append(("MJ_JUDGE", judge if not problems else f"{judge} — {'; '.join(problems)}"))
+    else:
+        rows.append(("MJ_JUDGE", "not set (pass --judge when mining/running)"))
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2) as resp:
+            rows.append(("ollama", f"reachable (HTTP {resp.status}) — free local judge"))
+    except Exception:
+        rows.append(("ollama", "not reachable at localhost:11434 (fine if unused)"))
+    table = Table("Check", "Status", title="km doctor")
+    for check, status in rows:
+        table.add_row(check, escape(status))
+    console.print(table)
+    if hard_fail:
+        _fail("doctor found broken suites/prices above")
 
 
 @app.command("ui")

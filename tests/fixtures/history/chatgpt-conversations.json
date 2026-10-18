@@ -1,0 +1,41 @@
+[
+  {
+    "conversation_id": "conv-gst",
+    "title": "GST invoice",
+    "create_time": 1780000000,
+    "current_node": "a3",
+    "mapping": {
+      "root": {"parent": null, "children": ["sys"], "message": null},
+      "sys": {
+        "parent": "root",
+        "children": ["u1"],
+        "message": {"author": {"role": "system"}, "create_time": 1, "content": {"content_type": "text", "parts": ["You are helpful."]}, "metadata": {}}
+      },
+      "u1": {
+        "parent": "sys",
+        "children": ["a1", "a2"],
+        "message": {"author": {"role": "user"}, "create_time": 2, "content": {"content_type": "text", "parts": ["Add 18% GST to 42500. Number only."]}, "metadata": {}}
+      },
+      "a1": {
+        "parent": "u1",
+        "children": [],
+        "message": {"author": {"role": "assistant"}, "create_time": 3, "content": {"content_type": "text", "parts": ["50150"]}, "metadata": {"model_slug": "gpt-test"}}
+      },
+      "a2": {
+        "parent": "u1",
+        "children": ["u2"],
+        "message": {"author": {"role": "assistant"}, "create_time": 4, "content": {"content_type": "text", "parts": ["59177"]}, "metadata": {"model_slug": "gpt-test"}}
+      },
+      "u2": {
+        "parent": "a2",
+        "children": ["a3"],
+        "message": {"author": {"role": "user"}, "create_time": 5, "content": {"content_type": "text", "parts": ["What is 2+2 {{ math }}?"]}, "metadata": {}}
+      },
+      "a3": {
+        "parent": "u2",
+        "children": [],
+        "message": {"author": {"role": "assistant"}, "create_time": 6, "content": {"content_type": "text", "parts": ["4"]}, "metadata": {"model_slug": "gpt-test"}}
+      }
+    }
+  }
+]

@@ -156,7 +156,10 @@ pub struct ModelState {
 
 impl ModelState {
     fn adapter(&self) -> Result<Arc<Adapter>, String> {
-        let mut cached = self.adapter.lock().map_err(|_| "Model adapter is unavailable".to_string())?;
+        let mut cached = self
+            .adapter
+            .lock()
+            .map_err(|_| "Model adapter is unavailable".to_string())?;
         // Desktop runs normally get a fresh environment snapshot at runner
         // construction. Also honor explicit changes to this public state,
         // without retaining old credentials or connections after a change.
@@ -641,7 +644,9 @@ mod tests {
     fn model_state_keeps_adapter_until_credentials_or_endpoint_change() {
         let mut env = BTreeMap::from([("OPENAI_API_KEY".into(), "initial-key".into())]);
         let mut runner = make_runner("model:openai/test", &PriceTable::default(), &env).unwrap();
-        let RunnerInner::Model(state) = &mut runner.inner else { unreachable!() };
+        let RunnerInner::Model(state) = &mut runner.inner else {
+            unreachable!()
+        };
         let first = state.adapter().unwrap();
         env.insert("OPENAI_API_KEY".into(), "external-change".into());
         state.options.max_tokens = Some(13);
@@ -649,12 +654,16 @@ mod tests {
         state.model = "another-model-on-the-same-provider".into();
         assert!(Arc::ptr_eq(&first, &state.adapter().unwrap()));
 
-        state.env.insert("OPENAI_API_KEY".into(), "rotated-key".into());
+        state
+            .env
+            .insert("OPENAI_API_KEY".into(), "rotated-key".into());
         let rotated = state.adapter().unwrap();
         assert!(!Arc::ptr_eq(&first, &rotated));
         assert!(Arc::ptr_eq(&rotated, &state.adapter().unwrap()));
 
-        state.env.insert("KM_OPENAI_BASE_URL".into(), "http://localhost:1234".into());
+        state
+            .env
+            .insert("KM_OPENAI_BASE_URL".into(), "http://localhost:1234".into());
         let moved = state.adapter().unwrap();
         assert!(!Arc::ptr_eq(&rotated, &moved));
         assert!(Arc::ptr_eq(&moved, &state.adapter().unwrap()));

@@ -326,6 +326,7 @@ impl App {
                     on_start: Some(&on_start),
                     on_attempt: Some(&on_attempt),
                     on_result: Some(&on_result),
+                    judge: None,
                 };
                 let summary = run_suite(
                     &suite, &runners, &store, &settings, 7, 1, None, None, &callbacks, None,
