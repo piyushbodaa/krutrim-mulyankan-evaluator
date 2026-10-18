@@ -473,6 +473,13 @@ def check_versions(version: str) -> None:
         "desktop/package.json": ("version",),
         "desktop/src-tauri/tauri.conf.json": ("version",),
     }
+    # The Python package constant feeds manifests/results and once drifted
+    # from pyproject during a bump; pin it to the same version.
+    init_text = (ROOT / "src/kritrim_mulyankan/__init__.py").read_text(encoding="utf-8")
+    require(
+        f'__version__ = "{version}"' in init_text,
+        "src/kritrim_mulyankan/__init__.py __version__ is out of sync",
+    )
     for filename, keys in manifests.items():
         content = (ROOT / filename).read_text(encoding="utf-8")
         actual = json.loads(content) if filename.endswith(".json") else tomllib.loads(content)
