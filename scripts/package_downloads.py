@@ -480,6 +480,14 @@ def check_versions(version: str) -> None:
         f'__version__ = "{version}"' in init_text,
         "src/kritrim_mulyankan/__init__.py __version__ is out of sync",
     )
+    tauri_lock = tomllib.loads((ROOT / "desktop/src-tauri/Cargo.lock").read_text(encoding="utf-8"))
+    desktop_pkg = next(
+        pkg for pkg in tauri_lock["package"] if pkg["name"] == "krutrim-mulyankan-desktop"
+    )
+    require(
+        desktop_pkg["version"] == version,
+        f"desktop/src-tauri/Cargo.lock: {desktop_pkg['version']} does not match tag {version}",
+    )
     for filename, keys in manifests.items():
         content = (ROOT / filename).read_text(encoding="utf-8")
         actual = json.loads(content) if filename.endswith(".json") else tomllib.loads(content)
