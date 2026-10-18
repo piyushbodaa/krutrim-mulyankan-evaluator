@@ -6,7 +6,6 @@ anything; the desktop workflow does the real building.
 
 import hashlib
 import json
-import plistlib
 import runpy
 import tarfile
 import tomllib
@@ -96,27 +95,6 @@ def test_native_matrix_uses_matching_architecture_and_installer_formats():
             "x86_64-unknown-linux-gnu",
             "appimage,deb,rpm",
         ),
-        (
-            "windows-x86_64",
-            "windows-2022",
-            "x86_64-pc-windows-msvc",
-            "x86_64-pc-windows-msvc",
-            "nsis",
-        ),
-        (
-            "macos-aarch64",
-            "macos-15",
-            "aarch64-apple-darwin",
-            "aarch64-apple-darwin",
-            "dmg",
-        ),
-        (
-            "macos-x86_64",
-            "macos-15-intel",
-            "x86_64-apple-darwin",
-            "x86_64-apple-darwin",
-            "dmg",
-        ),
     }
 
 
@@ -128,13 +106,7 @@ def test_release_assets_match_the_download_contract():
         "Krutrim-Mulyankan-linux.pkg.tar.zst",
         "Krutrim-Mulyankan-linux-setup.tar.gz",
         "km-desktop-linux.tar.gz",
-        "Krutrim-Mulyankan-windows.exe",
-        "Krutrim-Mulyankan-mac-arm64.dmg",
-        "Krutrim-Mulyankan-mac-x86_64.dmg",
         "km-linux-x86_64.tar.gz",
-        "km-windows-x86_64.zip",
-        "km-macos-aarch64.tar.gz",
-        "km-macos-x86_64.tar.gz",
     }
     assert PACKAGING["ASSETS"] == expected
     release = yaml.safe_load(_read(".github/workflows/release.yml"))
@@ -210,7 +182,7 @@ def test_release_verification_rejects_incomplete_downloads_and_hashes_all_assets
     with pytest.raises(RuntimeError, match="extra"):
         verify(tmp_path, "1.2.3")
     extra.unlink()
-    asset = tmp_path / "km-windows-x86_64.zip"
+    asset = tmp_path / "km-linux-x86_64.tar.gz"
     asset.write_bytes(b"")
     with pytest.raises(RuntimeError, match="Empty"):
         verify(tmp_path, "1.2.3")
@@ -228,69 +200,6 @@ def test_release_versions_stay_in_sync():
     npm_lock = json.loads(_read("desktop/package-lock.json"))
     assert npm_lock["version"] == version
     assert npm_lock["packages"][""]["version"] == version
-
-
-def test_windows_cli_and_engine_include_the_visual_cpp_runtime():
-    config = tomllib.loads(_read(".cargo/config.toml"))
-    flags = config["target"]["x86_64-pc-windows-msvc"]["rustflags"]
-    assert "target-feature=+crt-static" in flags
-
-
-@pytest.mark.parametrize("fmt", [plistlib.FMT_XML, plistlib.FMT_BINARY])
-def test_macos_bundle_allows_only_the_loopback_dashboard(tmp_path, fmt):
-    conf = json.loads(_read("desktop/src-tauri/tauri.conf.json"))
-    assert conf["bundle"]["macOS"]["exceptionDomain"] == "127.0.0.1"
-    app = tmp_path / "Krutrim Mulyankan.app"
-    contents = app / "Contents"
-    contents.mkdir(parents=True)
-    info = {
-        "NSAppTransportSecurity": {
-            "NSExceptionDomains": {
-                "127.0.0.1": {
-                    "NSExceptionAllowsInsecureHTTPLoads": True,
-                    "NSIncludesSubdomains": True,
-                }
-            }
-        }
-    }
-    (contents / "Info.plist").write_bytes(plistlib.dumps(info, fmt=fmt))
-    PACKAGING["verify_macos_transport"](app)
-
-
-@pytest.mark.parametrize(
-    "defect",
-    [
-        "missing_policy",
-        "missing_loopback",
-        "http_blocked",
-        "external_domain",
-        "NSAllowsArbitraryLoads",
-        "NSAllowsArbitraryLoadsInWebContent",
-        "NSAllowsArbitraryLoadsForMedia",
-        "NSAllowsLocalNetworking",
-    ],
-)
-def test_macos_bundle_rejects_blocked_dashboard_or_broad_http_policy(tmp_path, defect):
-    app = tmp_path / "Krutrim Mulyankan.app"
-    contents = app / "Contents"
-    contents.mkdir(parents=True)
-    loopback = {"NSExceptionAllowsInsecureHTTPLoads": True}
-    exceptions = {"127.0.0.1": loopback}
-    security = {"NSExceptionDomains": exceptions}
-    info = {"NSAppTransportSecurity": security}
-    if defect == "missing_policy":
-        info.clear()
-    elif defect == "missing_loopback":
-        exceptions.clear()
-    elif defect == "http_blocked":
-        loopback["NSExceptionAllowsInsecureHTTPLoads"] = False
-    elif defect == "external_domain":
-        exceptions["example.com"] = dict(loopback)
-    else:
-        security[defect] = True
-    (contents / "Info.plist").write_bytes(plistlib.dumps(info))
-    with pytest.raises(RuntimeError, match="macOS app must"):
-        PACKAGING["verify_macos_transport"](app)
 
 
 def test_release_triggers_and_publisher_use_the_validated_version_and_commit():

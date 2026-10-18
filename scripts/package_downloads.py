@@ -1,4 +1,4 @@
-"""Build and verify the same download payloads on Linux, Windows, and macOS.
+"""Build and verify the Linux download payloads.
 
 Uses only Python's standard library plus the native installer tools. Every smoke
 test starts outside the checkout, uses free runners, and stores results in a
@@ -11,20 +11,18 @@ import argparse
 import hashlib
 import json
 import os
-import plistlib
 import re
 import shutil
 import subprocess
 import tarfile
 import tempfile
 import tomllib
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOWNLOADS = ROOT / "dist" / "downloads"
 ENGINE = ROOT / "desktop" / "src-tauri" / "resources" / "engine"
-PLATFORMS = ("linux-x86_64", "windows-x86_64", "macos-aarch64", "macos-x86_64")
+PLATFORMS = ("linux-x86_64",)
 ASSETS = {
     "Krutrim-Mulyankan-linux.AppImage",
     "Krutrim-Mulyankan-linux.deb",
@@ -32,13 +30,7 @@ ASSETS = {
     "Krutrim-Mulyankan-linux.pkg.tar.zst",
     "Krutrim-Mulyankan-linux-setup.tar.gz",
     "km-desktop-linux.tar.gz",
-    "Krutrim-Mulyankan-windows.exe",
-    "Krutrim-Mulyankan-mac-arm64.dmg",
-    "Krutrim-Mulyankan-mac-x86_64.dmg",
     "km-linux-x86_64.tar.gz",
-    "km-windows-x86_64.zip",
-    "km-macos-aarch64.tar.gz",
-    "km-macos-x86_64.tar.gz",
 }
 ARCH_DEPENDS = (
     "cairo",
@@ -124,7 +116,7 @@ def check_grades(export: dict) -> None:
 
 def smoke_engine(root: Path) -> None:
     root = root.resolve()
-    binary = root / ("km-desktop.exe" if os.name == "nt" else "km-desktop")
+    binary = root / "km-desktop"
     for relative in (
         binary.name,
         "suites/example.yaml",
@@ -167,7 +159,7 @@ def smoke_engine(root: Path) -> None:
 
 
 def stage_engine(target: str) -> None:
-    name = "km-desktop.exe" if "windows" in target else "km-desktop"
+    name = "km-desktop"
     ENGINE.mkdir(parents=True, exist_ok=True)
     # Clear old architecture outputs while preserving the tracked placeholder.
     for entry in ENGINE.iterdir():
@@ -181,10 +173,9 @@ def stage_engine(target: str) -> None:
 
 
 def package_cli(target: str, platform: str) -> None:
-    windows = platform.startswith("windows")
-    name = "km.exe" if windows else "km"
+    name = "km"
     DOWNLOADS.mkdir(parents=True, exist_ok=True)
-    archive = DOWNLOADS / f"km-{platform}{'.zip' if windows else '.tar.gz'}"
+    archive = DOWNLOADS / f"km-{platform}.tar.gz"
     with tempfile.TemporaryDirectory(prefix="km-cli-package-") as temporary:
         work = Path(temporary)
         payload = work / "payload"
@@ -193,22 +184,13 @@ def package_cli(target: str, platform: str) -> None:
         shutil.copytree(ROOT / "suites", payload / "suites")
         shutil.copy2(ROOT / "LICENSE", payload / "LICENSE")
         shutil.copy2(ROOT / "NOTICE.txt", payload / "NOTICE.txt")
-        if windows:
-            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
-                for path in sorted(payload.rglob("*")):
-                    if path.is_file():
-                        output.write(path, path.relative_to(payload).as_posix())
-            with zipfile.ZipFile(archive) as output:
-                require(output.testzip() is None, "Corrupt CLI ZIP")
-                output.extractall(work / "unpacked")
-        else:
-            with tarfile.open(archive, "w:gz") as output:
-                output.add(payload / name, arcname=name)
-                output.add(payload / "suites", arcname="suites")
-                output.add(payload / "LICENSE", arcname="LICENSE")
-                output.add(payload / "NOTICE.txt", arcname="NOTICE.txt")
-            with tarfile.open(archive) as output:
-                output.extractall(work / "unpacked", filter="data")
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(payload / name, arcname=name)
+            output.add(payload / "suites", arcname="suites")
+            output.add(payload / "LICENSE", arcname="LICENSE")
+            output.add(payload / "NOTICE.txt", arcname="NOTICE.txt")
+        with tarfile.open(archive) as output:
+            output.extractall(work / "unpacked", filter="data")
         smoke_cli(work / "unpacked" / name)
         # Also verify the promised single executable works using embedded suites.
         standalone = work / "standalone"
@@ -219,7 +201,7 @@ def package_cli(target: str, platform: str) -> None:
 
 
 def packaged_engine(directory: Path) -> Path:
-    name = "km-desktop.exe" if os.name == "nt" else "km-desktop"
+    name = "km-desktop"
     return one(path for path in directory.rglob(name) if path.parent.name == "engine").parent
 
 
@@ -428,30 +410,6 @@ def package_rpm_from_deb(deb: Path) -> None:
     print("RPM package built and verified from the released DEB")
 
 
-def verify_macos_transport(app: Path) -> None:
-    # macOS 14+ requires an ATS exception for the dashboard's numeric loopback
-    # address. Check the actual bundled plist, including any bundler overrides.
-    with (app / "Contents" / "Info.plist").open("rb") as source:
-        info = plistlib.load(source)
-    security = info.get("NSAppTransportSecurity", {})
-    exceptions = security.get("NSExceptionDomains", {})
-    require(
-        set(exceptions) == {"127.0.0.1"},
-        "macOS app must restrict its HTTP transport exception to 127.0.0.1",
-    )
-    require(
-        exceptions["127.0.0.1"].get("NSExceptionAllowsInsecureHTTPLoads") is True,
-        "macOS app must permit HTTP for its loopback dashboard",
-    )
-    for key in (
-        "NSAllowsArbitraryLoads",
-        "NSAllowsArbitraryLoadsInWebContent",
-        "NSAllowsArbitraryLoadsForMedia",
-        "NSAllowsLocalNetworking",
-    ):
-        require(security.get(key) is not True, f"macOS app must not enable broad {key}")
-
-
 def package_desktop(target: str, platform: str) -> None:
     bundle = ROOT / "desktop/src-tauri/target" / target / "release/bundle"
     DOWNLOADS.mkdir(parents=True, exist_ok=True)
@@ -504,28 +462,6 @@ def package_desktop(target: str, platform: str) -> None:
             run(["bsdtar", "-xf", rpm, "-C", work / "rpm"])
             verify_linux_payload(work / "rpm")
             shutil.copy2(rpm, DOWNLOADS / "Krutrim-Mulyankan-linux.rpm")
-        elif platform.startswith("windows"):
-            installer = one((bundle / "nsis").glob("*.exe"))
-            # NSIS consumes /D through the end of the raw command line, without
-            # quoting even when its path contains spaces. Exercise that case.
-            installed = work / "installed app"
-            command = subprocess.list2cmdline([str(installer), "/S", "/NS"])
-            run(f"{command} /D={installed}")
-            smoke_engine(packaged_engine(installed))
-            shutil.copy2(installer, DOWNLOADS / "Krutrim-Mulyankan-windows.exe")
-        else:
-            dmg = one((bundle / "dmg").glob("*.dmg"))
-            mount = work / "mount"
-            run(["hdiutil", "attach", dmg, "-readonly", "-nobrowse", "-mountpoint", mount])
-            try:
-                app = one(mount.glob("*.app"))
-                verify_macos_transport(app)
-                run(["codesign", "--verify", "--deep", "--strict", app])
-                smoke_engine(packaged_engine(app))
-            finally:
-                run(["hdiutil", "detach", mount])
-            arch = "arm64" if platform == "macos-aarch64" else "x86_64"
-            shutil.copy2(dmg, DOWNLOADS / f"Krutrim-Mulyankan-mac-{arch}.dmg")
     print(f"Desktop packages verified: {platform}")
 
 

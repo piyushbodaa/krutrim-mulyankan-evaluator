@@ -20,21 +20,6 @@ jobs:
             cli-target: x86_64-unknown-linux-musl
             desktop-target: x86_64-unknown-linux-gnu
             bundles: appimage,deb,rpm
-          - platform: windows-x86_64
-            os: windows-2022
-            cli-target: x86_64-pc-windows-msvc
-            desktop-target: x86_64-pc-windows-msvc
-            bundles: nsis
-          - platform: macos-aarch64
-            os: macos-15
-            cli-target: aarch64-apple-darwin
-            desktop-target: aarch64-apple-darwin
-            bundles: dmg
-          - platform: macos-x86_64
-            os: macos-15-intel
-            cli-target: x86_64-apple-darwin
-            desktop-target: x86_64-apple-darwin
-            bundles: dmg
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -68,9 +53,6 @@ jobs:
           cargo build --locked --release --manifest-path km-rs/Cargo.toml -p km-desktop-engine --target "${{ matrix.desktop-target }}"
           python scripts/package_downloads.py stage-engine --target "${{ matrix.desktop-target }}"
           python scripts/package_downloads.py package-cli --target "${{ matrix.cli-target }}" --platform "${{ matrix.platform }}"
-      - name: Ad-hoc sign the bundled macOS engine
-        if: runner.os == 'macOS'
-        run: codesign --force --sign - desktop/src-tauri/resources/engine/km-desktop
       - name: Verify the staged engine from an empty working directory
         run: python scripts/package_downloads.py smoke-engine --root desktop/src-tauri/resources/engine
       - name: Build the desktop installer

@@ -89,10 +89,8 @@ If that service is locked, the window still opens and practice checks still run.
 ## Native builds and GitHub Releases
 
 `.github/workflows/build-downloads.yml` is shared by desktop CI and releases.
-It builds on Ubuntu 22.04 (x86-64), Windows Server 2022 (x86-64), macOS 15
-(Apple Silicon), and macOS 15 Intel. Each runner builds its own CLI, Rust engine,
-and Tauri shell. No Python/PyInstaller engine is bundled. Windows binaries statically link the
-Visual C++ runtime, so the CLI and engine need no separate VC redistributable.
+It builds on Ubuntu 22.04 (x86-64) only. The runner builds the CLI, Rust engine,
+and Tauri shell. No Python/PyInstaller engine is bundled.
 
 Pull requests, pushes to `main`, and manual runs of **Desktop installers** upload
 artifacts for review. Separately, merging synchronized package version changes to
@@ -114,25 +112,14 @@ configuring a platform does not itself make it released.
 | `Krutrim-Mulyankan-linux.rpm` | Fedora/openSUSE x86-64 desktop package. |
 | `Krutrim-Mulyankan-linux.pkg.tar.zst` | Arch/Omarchy x86-64 desktop package. |
 | `km-desktop-linux.tar.gz` | Extracted Linux app for systems without FUSE. |
-| `Krutrim-Mulyankan-windows.exe` | Windows x86-64 NSIS installer. |
-| `Krutrim-Mulyankan-mac-arm64.dmg` | Apple Silicon Mac app disk image. |
-| `Krutrim-Mulyankan-mac-x86_64.dmg` | Intel Mac app disk image. |
 | `km-linux-x86_64.tar.gz` | Linux x86-64 static CLI. |
-| `km-windows-x86_64.zip` | Windows x86-64 CLI (`km.exe`). |
-| `km-macos-aarch64.tar.gz` | Apple Silicon Mac CLI. |
-| `km-macos-x86_64.tar.gz` | Intel Mac CLI. |
 | `kritrim_mulyankan-<version>-py3-none-any.whl` | Python CLI package for `pip`. |
 | `SHA256SUMS` | SHA-256 hashes for release files. |
 
-For Windows, run the `.exe` installer. For macOS, open the disk image and drag the
-app into Applications. Choose Apple Silicon for M-series Macs; choose Intel for
-Intel Macs. Windows builds have no Authenticode certificate; macOS builds have an
-ad-hoc signature and are not notarized. See [SIGNING.md](SIGNING.md).
+Builds have no verified publisher certificate. See [SIGNING.md](SIGNING.md).
 
-The engine is an executable with stdin/stdout pipes. Windows uses
-`CREATE_NO_WINDOW` for the engine so opening the desktop app does not open a
-console window. Keys use macOS Keychain, Windows Credential Manager, or Linux
-Secret Service. Windows CLI keys use the user's application-data directory.
+The engine is an executable with stdin/stdout pipes. Keys use the Linux
+Secret Service.
 
 Each native job runs Rust tests, extracts and exercises the CLI archive, checks the
 engine's JSON-lines protocol, and verifies the engine and resources inside the

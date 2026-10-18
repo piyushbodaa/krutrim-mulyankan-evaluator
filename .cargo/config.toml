@@ -1,4 +1,0 @@
-# Windows CLI and bundled engine must run without a separate Visual C++
-# Redistributable installation. Tauri also defaults to a static VC runtime.
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
