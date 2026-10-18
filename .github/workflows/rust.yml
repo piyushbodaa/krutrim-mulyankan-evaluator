@@ -30,7 +30,7 @@ jobs:
           components: clippy, rustfmt
       - name: Format and clippy (zero warnings)
         run: |
-          cargo fmt --locked --manifest-path km-rs/Cargo.toml --all -- --check
+          cargo fmt --manifest-path km-rs/Cargo.toml --all -- --check
           cargo clippy --locked --manifest-path km-rs/Cargo.toml --all-targets -- -D warnings
       - uses: astral-sh/setup-uv@v5
         with:
