@@ -5,10 +5,10 @@ Nobody has to enter a password or approve a certificate for those builds.
 
 | Platform | What CI produces | What "unsigned" means |
 |---|---|---|
-| Linux | `.deb`, `.rpm`, `.AppImage`, `.pkg.tar.zst` | No GPG signature on the package. |
+| Arch / Omarchy | `.pkg.tar.zst` | No GPG signature on the package. |
 
 ## When you are ready to sign
 
-**Linux (optional).** Sign the `.deb` with `dpkg-sig` and publish a repo key, or sign the AppImage with `gpg`.
+**Arch (optional).** Sign the package with `makepkg --sign` and publish the public key.
 
 Do not commit certificates or signing passwords. Until that work lands, ship the CI artifacts as unsigned downloads and say so on the download page.

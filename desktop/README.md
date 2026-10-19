@@ -67,19 +67,18 @@ uv run ruff check src/kritrim_mulyankan/desktop_bridge.py tests/test_desktop_bri
 
 The rest of `uv run pytest` stays required. The CLI (`uv run km …`) is the same tool it was.
 
-## Install on Linux, including Arch / Omarchy
+## Install on Arch / Omarchy
 
-Download `Krutrim-Mulyankan-linux-setup.tar.gz` from the project download page.
-Extract it in Files, open the extracted folder, and double-click **Install Krutrim
-Mulyankan**. Choose **Install & Open**. Setup installs for your account, adds an app
-launcher and a **Manage installation** action, and opens the app. It includes the
-application and needs no terminal, administrator password, or FUSE. A Linux x86-64
-desktop with GTK 3 is required. The executable permission is preserved inside the
-archive, so the installer must be extracted before opening it.
+Download `Krutrim-Mulyankan-linux.pkg.tar.zst` from the project download page
+and install it with pacman:
 
-Native Debian/Ubuntu, RPM, and Arch packages are alternatives for system package
-managers; see [NATIVE-LINUX.md](NATIVE-LINUX.md). The raw AppImage remains a portable
-option that requires permission to execute. It is not the graphical installer.
+```sh
+sudo pacman -U Krutrim-Mulyankan-linux.pkg.tar.zst
+```
+
+Then open **Krutrim Mulyankan** from the application menu. Pacman installs the
+app, its launcher, icons and declared dependencies, and removes them cleanly
+with `sudo pacman -R krutrim-mulyankan`. Details: [NATIVE-LINUX.md](NATIVE-LINUX.md).
 
 The window turns off WebKit's DMA-BUF renderer unless you have already set
 `WEBKIT_DISABLE_DMABUF_RENDERER`. On Hyprland it also turns off compositing mode so
@@ -106,12 +105,7 @@ configuring a platform does not itself make it released.
 
 | File | What it is |
 |---|---|
-| `Krutrim-Mulyankan-linux-setup.tar.gz` | Offline graphical Linux x86-64 installer; extract, then open Install Krutrim Mulyankan. |
-| `Krutrim-Mulyankan-linux.AppImage` | Linux x86-64 desktop app. |
-| `Krutrim-Mulyankan-linux.deb` | Debian/Ubuntu x86-64 desktop package. |
-| `Krutrim-Mulyankan-linux.rpm` | Fedora/openSUSE x86-64 desktop package. |
-| `Krutrim-Mulyankan-linux.pkg.tar.zst` | Arch/Omarchy x86-64 desktop package. |
-| `km-desktop-linux.tar.gz` | Extracted Linux app for systems without FUSE. |
+| `Krutrim-Mulyankan-linux.pkg.tar.zst` | Arch/Omarchy x86-64 desktop package (`pacman -U`). |
 | `km-linux-x86_64.tar.gz` | Linux x86-64 static CLI. |
 | `kritrim_mulyankan-<version>-py3-none-any.whl` | Python CLI package for `pip`. |
 | `SHA256SUMS` | SHA-256 hashes for release files. |
@@ -137,7 +131,7 @@ cargo build --release --locked --manifest-path km-rs/Cargo.toml -p km-desktop-en
 Follow the staging and bundling commands in `.github/workflows/build-downloads.yml`;
 they copy the engine, suites, dashboard, and bridge resources before `npm ci` and
 `npm run build`. Use `--bundles nsis` on Windows, `--bundles dmg` on macOS, or
-`--bundles appimage,deb` on Linux. Build each Mac architecture on its matching
+`--bundles deb` on Linux (the DEB is the staging payload for the Arch package). Build each Mac architecture on its matching
 runner so the shell and engine always match.
 
 ## Language and appearance

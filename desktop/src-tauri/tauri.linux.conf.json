@@ -9,22 +9,6 @@
           "/usr/share/licenses/krutrim-mulyankan/LICENSE": "../../LICENSE",
           "/usr/share/licenses/krutrim-mulyankan/NOTICE.txt": "../../NOTICE.txt"
         }
-      },
-      "rpm": {
-        "depends": [
-          "libc.so.6()(64bit)",
-          "libgcc_s.so.1()(64bit)",
-          "libgtk-3.so.0()(64bit)",
-          "libwebkit2gtk-4.1.so.0()(64bit)",
-          "libsoup-3.0.so.0()(64bit)",
-          "libdbus-1.so.3()(64bit)",
-          "xdg-utils"
-        ],
-        "recommends": ["gnome-keyring"],
-        "files": {
-          "/usr/share/licenses/krutrim-mulyankan/LICENSE": "../../LICENSE",
-          "/usr/share/licenses/krutrim-mulyankan/NOTICE.txt": "../../NOTICE.txt"
-        }
       }
     }
   }

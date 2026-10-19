@@ -93,19 +93,14 @@ def test_native_matrix_uses_matching_architecture_and_installer_formats():
             "ubuntu-22.04",
             "x86_64-unknown-linux-musl",
             "x86_64-unknown-linux-gnu",
-            "appimage,deb,rpm",
+            "deb",
         ),
     }
 
 
 def test_release_assets_match_the_download_contract():
     expected = {
-        "Krutrim-Mulyankan-linux.AppImage",
-        "Krutrim-Mulyankan-linux.deb",
-        "Krutrim-Mulyankan-linux.rpm",
         "Krutrim-Mulyankan-linux.pkg.tar.zst",
-        "Krutrim-Mulyankan-linux-setup.tar.gz",
-        "km-desktop-linux.tar.gz",
         "km-linux-x86_64.tar.gz",
     }
     assert PACKAGING["ASSETS"] == expected
@@ -154,13 +149,12 @@ def test_arch_recipe_rejects_unsafe_version_or_payload_checksum(version, digest)
 
 
 def test_native_linux_builds_declare_runtime_dependencies_and_build_arch_package():
+    # The desktop app ships for Arch/Omarchy only: Tauri builds just the
+    # DEB staging payload, and no RPM/AppImage configuration may return.
     linux = json.loads(_read("desktop/src-tauri/tauri.linux.conf.json"))
-    rpm = linux["bundle"]["linux"]["rpm"]
-    # RPM has no Debian-style automatic dependency inference. The WebKit ABI
-    # capability works with both Fedora and openSUSE package naming.
-    assert "libwebkit2gtk-4.1.so.0()(64bit)" in rpm["depends"]
-    assert "libgtk-3.so.0()(64bit)" in rpm["depends"]
-    assert "xdg-utils" in rpm["depends"]
+    assert set(linux["bundle"]["linux"]) == {"deb"}
+    assert "webkit2gtk-4.1" in PACKAGING["ARCH_DEPENDS"]
+    assert "gtk3" in PACKAGING["ARCH_DEPENDS"]
     workflow = yaml.safe_load(_read(".github/workflows/build-downloads.yml"))
     steps = workflow["jobs"]["build"]["steps"]
     arch = next(
