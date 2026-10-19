@@ -7,6 +7,7 @@ from kritrim_mulyankan.pricing import (
     bundled_prices,
     load_prices,
     max_input_tokens,
+    openrouter_prices,
 )
 
 
@@ -72,6 +73,56 @@ def test_malformed_price_files_are_rejected(tmp_path, bad):
 def test_max_input_tokens_is_bytes_plus_overhead():
     assert max_input_tokens("abcd") == 4 + MESSAGE_OVERHEAD_TOKENS
     assert max_input_tokens("₹") == 3 + MESSAGE_OVERHEAD_TOKENS  # 3 UTF-8 bytes
+
+
+def test_bundled_prices_cover_every_connectable_lab():
+    table = bundled_prices()
+    for provider, model in [
+        ("openai", "gpt-5"),
+        ("openai", "gpt-5-mini"),
+        ("gemini", "gemini-2.5-flash"),
+        ("xai", "grok-4.20"),
+        ("openrouter", "anthropic/claude-sonnet-4.6"),
+        ("openrouter", "openai/gpt-5-mini"),
+        ("openrouter", "google/gemini-2.5-flash"),
+        ("openrouter", "deepseek/deepseek-chat"),
+    ]:
+        price = table.lookup(provider, model)
+        assert price is not None, f"{provider}/{model}"
+        assert price.source.startswith("https://") and price.as_of
+
+
+def test_openrouter_live_prices_parse_per_token_amounts():
+    doc = {
+        "data": [
+            {
+                "id": "openai/gpt-5-mini",
+                "pricing": {"prompt": "0.00000025", "completion": "0.000002"},
+            },
+            {
+                "id": "google/gemini-2.5-pro",
+                "pricing": {
+                    "prompt": "0.00000125",
+                    "completion": "0.00001",
+                    "overrides": [
+                        {
+                            "min_prompt_tokens": 200000,
+                            "prompt": "0.0000025",
+                            "completion": "0.000015",
+                        }
+                    ],
+                },
+            },
+            {"id": "broken/model", "pricing": {}},
+        ]
+    }
+    table = openrouter_prices(doc)
+    mini = table.lookup("openrouter", "openai/gpt-5-mini")
+    assert (mini.input, mini.output) == pytest.approx((0.25, 2.0))
+    pro = table.lookup("openrouter", "google/gemini-2.5-pro")
+    assert pro.long_context_threshold == 200000
+    assert pro.long_input == pytest.approx(2.5)
+    assert table.lookup("openrouter", "broken/model") is None
 
 
 def test_empty_table():

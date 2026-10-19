@@ -126,6 +126,69 @@ impl PriceTable {
     }
 }
 
+/// Prices from OpenRouter's public model list (`GET /api/v1/models`),
+/// mirroring `openrouter_prices` in pricing.py. Per-token prices become
+/// USD per million tokens, keyed `openrouter/<model id>`.
+pub fn openrouter_prices(models: &serde_json::Value) -> PriceTable {
+    fn per_mtok(value: Option<&serde_json::Value>) -> Option<f64> {
+        let value = value?;
+        let parsed = match value {
+            serde_json::Value::String(s) => s.parse::<f64>().ok()?,
+            serde_json::Value::Number(n) => n.as_f64()?,
+            _ => return None,
+        };
+        (parsed >= 0.0).then_some(parsed * 1_000_000.0)
+    }
+    let mut prices = BTreeMap::new();
+    let rows = models
+        .get("data")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for row in &rows {
+        let Some(id) = row.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let pricing = row
+            .get("pricing")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let (Some(input), Some(output)) = (
+            per_mtok(pricing.get("prompt")),
+            per_mtok(pricing.get("completion")),
+        ) else {
+            continue;
+        };
+        let mut price = Price {
+            input,
+            output,
+            cache_read: per_mtok(pricing.get("input_cache_read")),
+            cache_write: per_mtok(pricing.get("input_cache_write")),
+            long_context_threshold: None,
+            long_input: None,
+            long_output: None,
+            source: Some("https://openrouter.ai/api/v1/models (live)".into()),
+            as_of: None,
+        };
+        if let Some(overrides) = pricing.get("overrides").and_then(|v| v.as_array()) {
+            for over in overrides {
+                if let (Some(threshold), Some(li), Some(lo)) = (
+                    over.get("min_prompt_tokens").and_then(|v| v.as_i64()),
+                    per_mtok(over.get("prompt")),
+                    per_mtok(over.get("completion")),
+                ) {
+                    price.long_context_threshold = Some(threshold);
+                    price.long_input = Some(li);
+                    price.long_output = Some(lo);
+                    break;
+                }
+            }
+        }
+        prices.insert(format!("openrouter/{id}"), price);
+    }
+    PriceTable { prices }
+}
+
 pub fn bundled_prices() -> PriceTable {
     PriceTable::parse(BUNDLED, "bundled prices.yaml").unwrap_or_default()
 }

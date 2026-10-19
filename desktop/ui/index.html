@@ -53,6 +53,12 @@
         <button class="secondary big" id="home-write" type="button" data-i18n="home.write">Write my own questions</button>
       </div>
       <p class="muted small" data-i18n="home.free">Try it free first: two demo bots need no account and cost nothing.</p>
+      <button class="feature card" id="home-mine" type="button">
+        <span class="feature-text">
+          <strong data-i18n="home.mineTitle">Build a test from your own AI chats</strong>
+          <span class="muted" data-i18n="home.mineText">Bring your ChatGPT, Claude or Claude Code export. An AI re-checks the answers you got, and the questions it got wrong become your personal test.</span>
+        </span>
+      </button>
       <button class="feature card" id="home-side" type="button">
         <span class="feature-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
         <span class="feature-text">
@@ -103,6 +109,67 @@
       <div class="actions sticky">
         <button class="secondary" id="builder-cancel" type="button" data-i18n="b.cancel">Cancel</button>
         <button class="primary" id="builder-save" type="button" data-i18n="b.save">Save and pick the AIs</button>
+      </div>
+    </section>
+
+    <!-- Build a micro-eval from your own chat history -->
+    <section id="mine" class="screen" aria-labelledby="mine-title" hidden>
+      <h1 id="mine-title" tabindex="-1" data-i18n="m.title">Build a test from your own AI chats</h1>
+      <p class="lede" data-i18n="m.lede">Your export stays on this computer. A marking AI you pick re-checks each answer you received; only questions it confidently says were answered wrongly become test questions, with the right answer it states.</p>
+
+      <h2 class="group-title" data-i18n="m.step1">1. Your chats</h2>
+      <ul class="small muted mine-get">
+        <li data-i18n="m.getChatgpt">ChatGPT: Settings → Data controls → Export. Bring the whole .zip file.</li>
+        <li data-i18n="m.getClaude">Claude: Settings → Privacy → Export data. Bring the .zip file.</li>
+        <li data-i18n="m.getCode">Claude Code: bring the ~/.claude/projects folder path, or any session .jsonl file.</li>
+      </ul>
+      <ul id="mine-files" class="list"></ul>
+      <div class="key-row">
+        <input id="mine-path" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="m.pathPh" placeholder="…or paste a file or folder path, like ~/Downloads/export.zip">
+        <button class="secondary" id="mine-add-path" type="button" data-i18n="m.addPath">Add</button>
+        <button class="secondary" id="mine-choose" type="button" data-i18n="m.choose">Choose files…</button>
+      </div>
+      <div class="actions">
+        <button class="secondary" id="mine-look" type="button" data-i18n="m.look">Look inside (counts only)</button>
+      </div>
+      <p class="small" id="mine-found" role="status" aria-live="polite"></p>
+
+      <div id="mine-step2" hidden>
+        <h2 class="group-title" data-i18n="m.step2">2. The marking AI</h2>
+        <p class="muted small" data-i18n="m.judgeHelp">This AI reads each question and the answer you got, and says whether it was wrong. A small, cheap AI is a good choice. Free option: a local Ollama model, like ollama/llama3.2:3b.</p>
+        <label class="field">
+          <span data-i18n="m.judgePick">Marking AI</span>
+          <select id="mine-judge"></select>
+        </label>
+        <label class="field" id="mine-judge-custom-wrap" hidden>
+          <span data-i18n="m.judgePh">provider/model, e.g. ollama/llama3.2:3b</span>
+          <input id="mine-judge-custom" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="m.judgePh" placeholder="provider/model, e.g. ollama/llama3.2:3b">
+        </label>
+        <label class="field inline">
+          <span data-i18n="m.limit">How many questions to check</span>
+          <select id="mine-limit"></select>
+        </label>
+        <label class="field">
+          <span data-i18n="m.name">Name of your test</span>
+          <input id="mine-name" type="text" maxlength="80" autocomplete="off" data-i18n-placeholder="m.namePh">
+        </label>
+      </div>
+
+      <div id="mine-step3" hidden>
+        <h2 class="group-title" data-i18n="m.step3">3. Cost, then build</h2>
+        <div id="mine-cost" aria-live="polite"></div>
+        <div class="actions">
+          <button class="secondary" id="mine-price" type="button" data-i18n="m.price">Work out the cost</button>
+          <label class="confirm" id="mine-agree-wrap" hidden><input id="mine-agree" type="checkbox"><span id="mine-agree-text"></span></label>
+          <button class="primary big" id="mine-build" type="button" disabled data-i18n="m.build">Build my test</button>
+        </div>
+        <p class="small" id="mine-progress" role="status" aria-live="polite"></p>
+        <div id="mine-result" aria-live="polite"></div>
+        <p class="muted small" data-i18n="m.privacy">The full questions and answers are kept in a private file next to the test, on this computer only. The judge can be wrong: scores on this test are judge-graded, not ground truth.</p>
+      </div>
+
+      <div class="actions sticky">
+        <button class="secondary" data-goto="questions" type="button" data-i18n="c.back">Back</button>
       </div>
     </section>
 
@@ -236,7 +303,7 @@
     <!-- AI accounts -->
     <section id="accounts" class="screen" aria-labelledby="accounts-title" hidden>
       <h1 id="accounts-title" tabindex="-1" data-i18n="acc.title">Connect your AI accounts</h1>
-      <p class="lede" data-i18n="acc.lede">To test real AIs like Claude, connect the account you pay for. You copy a secret key from the company's website and paste it here.</p>
+      <p class="lede" data-i18n="acc.lede2">Connect any company you pay for. One OpenRouter key covers AIs from OpenAI, Anthropic, Google, Meta and more, so it is the quickest way to compare them.</p>
       <p class="reassure"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span data-i18n="acc.safe">Your key stays locked in this computer's password store. It is not saved in a file and is only sent to that company.</span></p>
       <div id="provider-list" class="stack"></div>
       <details class="more" id="other-providers" hidden>

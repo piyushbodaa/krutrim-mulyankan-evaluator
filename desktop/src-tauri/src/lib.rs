@@ -231,6 +231,25 @@ fn keychain_status() -> Vec<String> {
     rx.recv_timeout(Duration::from_secs(3)).unwrap_or_default()
 }
 
+/// Native file chooser for chat-history exports. Returns the picked paths
+/// (empty when cancelled); the engine reads only these paths.
+#[tauri::command]
+fn pick_files(app: AppHandle) -> Vec<String> {
+    let chosen = app
+        .dialog()
+        .file()
+        .set_title("Choose your ChatGPT, Claude or Claude Code export")
+        .blocking_pick_files();
+    let Some(paths) = chosen else {
+        return Vec::new();
+    };
+    paths
+        .into_iter()
+        .filter_map(|path| path.into_path().ok())
+        .map(|path| path.display().to_string())
+        .collect()
+}
+
 #[tauri::command]
 fn save_text(app: AppHandle, filename: String, contents: String) -> Result<Option<String>, String> {
     let chosen = app.dialog().file().set_file_name(&filename).blocking_save_file();
@@ -310,7 +329,8 @@ pub fn run() {
             engine_call,
             keychain_set,
             keychain_status,
-            save_text
+            save_text,
+            pick_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running Krutrim Mulyankan");

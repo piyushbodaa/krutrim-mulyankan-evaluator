@@ -51,9 +51,9 @@ Bring your own data; it never leaves this machine during import.
 - **Claude Code**: pass `~/.claude/projects` (or any `*.jsonl` session file).
 
 ```sh
-# 0. Needs a judge. Free and local: any Ollama model. Or set ANTHROPIC_API_KEY
-#    (or `ant auth login`) and use a priced Anthropic model like claude-haiku-4-5.
-#    OpenRouter judges need an entry in prices.yaml first (see `km list prices`).
+# 0. Needs a judge. Free and local: any Ollama model. Or use any priced model
+#    from OpenAI, Anthropic, Google, xAI or OpenRouter (one OPENROUTER_API_KEY
+#    reaches them all, e.g. --judge openrouter/openai/gpt-5-mini).
 
 # 1. Look first — offline, counts only, prints no prompt content.
 uv run km history ~/Downloads/chatgpt-export.zip ~/.claude/projects
@@ -88,8 +88,12 @@ repo). Caveat stated plainly: the judge can be wrong, so these scores are
 judge-graded evidence about your prompts, not ground truth.
 
 The generated suite also appears in `km ui` like any other suite. The desktop
-app and `km ui` import screens for this flow are the next step; today import and
-mining run from the CLI above.
+app has the same flow built in: **Build a test from your own AI chats** (Home,
+or under Your tests) picks the export files, counts them offline, prices the
+marking AI before anything is called, and mines the test into Your tests.
+Connect OpenRouter, OpenAI, Anthropic, Google or xAI keys under **AI
+accounts** — one OpenRouter key reaches every lab's models, as test-takers
+and as the marking judge.
 
 ## Desktop app
 

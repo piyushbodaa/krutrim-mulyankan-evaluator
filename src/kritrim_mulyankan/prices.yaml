@@ -2,8 +2,9 @@
 # the file named by MJ_PRICES), using the same format; entries there win.
 #
 # A paid model with no price here is refused before any call, so the budget cap always holds.
-# Only prices with a checked source are bundled. Add OpenAI, Gemini, xAI and OpenRouter models
-# yourself from the provider's pricing page.
+# Only prices with a checked source are bundled. OpenRouter models not listed here are priced
+# live from OpenRouter's public model list before a run; other models can be added in
+# ./prices.yaml from the provider's pricing page.
 #
 # Per model: input, output, and optionally cache_read, cache_write (default: input, and
 # 1.25 x input), plus long_context_threshold / long_input / long_output for prompt-size tiers.
@@ -25,6 +26,52 @@ anthropic:
     claude-haiku-5-5:
       {input: 0.10, output: 0.50, long_context_threshold: 100000, long_input: 0.50, long_output: 2.50}
     claude-haiku-4-5: {input: 1.00, output: 5.00}
+
+openai:
+  source: https://openai.com/api/pricing
+  as_of: "2026-10-19"
+  models:
+    gpt-5: {input: 1.25, output: 10.00}
+    gpt-5-mini: {input: 0.25, output: 2.00}
+    gpt-4o: {input: 2.50, output: 10.00}
+    gpt-4o-mini: {input: 0.15, output: 0.60}
+
+gemini:
+  source: https://ai.google.dev/gemini-api/docs/pricing
+  as_of: "2026-10-19"
+  models:
+    gemini-2.5-pro: {input: 1.25, output: 10.00}
+    gemini-2.5-flash: {input: 0.30, output: 2.50}
+    gemini-2.5-flash-lite: {input: 0.10, output: 0.40}
+
+xai:
+  source: https://x.ai/api
+  as_of: "2026-10-19"
+  models:
+    grok-4.20: {input: 1.25, output: 2.50}
+    grok-4.3: {input: 1.25, output: 2.50}
+
+# One OpenRouter key reaches every lab below. Prices are OpenRouter's list
+# prices from its public model list; any other OpenRouter model is priced
+# live from the same list before a run, so the budget cap still holds.
+openrouter:
+  source: https://openrouter.ai/api/v1/models
+  as_of: "2026-10-19"
+  models:
+    "anthropic/claude-haiku-4.5": {input: 1.00, output: 5.00}
+    "anthropic/claude-sonnet-4.6": {input: 3.00, output: 15.00}
+    "anthropic/claude-opus-4.6": {input: 5.00, output: 25.00}
+    "openai/gpt-5": {input: 1.25, output: 10.00}
+    "openai/gpt-5-mini": {input: 0.25, output: 2.00}
+    "openai/gpt-4o-mini": {input: 0.15, output: 0.60}
+    "google/gemini-2.5-pro": {input: 1.25, output: 10.00}
+    "google/gemini-2.5-flash": {input: 0.30, output: 2.50}
+    "google/gemini-2.5-flash-lite": {input: 0.10, output: 0.40}
+    "x-ai/grok-4.20": {input: 1.25, output: 2.50}
+    "deepseek/deepseek-chat": {input: 0.32, output: 0.89}
+    "meta-llama/llama-4-maverick": {input: 0.19, output: 0.65}
+    "meta-llama/llama-3.3-70b-instruct": {input: 0.10, output: 0.32}
+    "mistralai/mistral-small-3.2-24b-instruct": {input: 0.09, output: 0.25}
 
 ollama:
   source: local inference, no API charges

@@ -9,6 +9,7 @@ const PROVIDERS = {
   gemini: {family: "Gemini", maker: "Google"},
   xai: {family: "Grok", maker: "xAI"},
   openrouter: {family: "OpenRouter", maker: "OpenRouter"},
+  compatible: {family: "Other API", maker: "compatible API"},
 };
 
 const state = {
@@ -30,6 +31,7 @@ const state = {
   armedDelete: null,
   modalProvider: null,
   screen: "home",
+  mine: {files: [], preview: null, estimate: null, agreed: false, building: false, builtSuite: null},
 };
 
 const $ = (id) => document.getElementById(id);
@@ -116,7 +118,8 @@ function loadPicks() {
 
 function modelInfo(model) {
   const provider = model.provider;
-  const match = /^claude-([a-z]+)-(\d+)(?:-(\d+))?$/.exec(model.model || "");
+  const bare = String(model.model || "").split("/").pop();
+  const match = /^claude-([a-z]+)-(\d+)(?:[-.](\d+))?$/.exec(bare);
   if (model.free) {
     return {spec: model.spec, provider, label: labelOf(model, "name"), blurb: labelOf(model, "blurb"), family: "demo", version: [0, 0]};
   }
@@ -124,9 +127,9 @@ function modelInfo(model) {
     const family = match[1];
     const label = `Claude ${family[0].toUpperCase()}${family.slice(1)} ${match[2]}${match[3] ? "." + match[3] : ""}`;
     const blurbKey = ["haiku", "sonnet", "opus", "fable"].includes(family) ? "tier." + family : "tier.other";
-    return {spec: model.spec, provider, label, blurb: t(blurbKey), family, version: [Number(match[2]), Number(match[3] || 0)]};
+    return {spec: model.spec, provider, label, blurb: t(blurbKey), family, version: [Number(match[2]), Number(match[3] || 0)], suggested: Boolean(model.suggested)};
   }
-  return {spec: model.spec, provider, label: model.name, blurb: t("tier.other"), family: model.model || model.name, version: [0, 0]};
+  return {spec: model.spec, provider, label: model.name, blurb: t("tier.other"), family: model.model || model.name, version: [0, 0], suggested: Boolean(model.suggested)};
 }
 
 function prettyName(spec, fallback) {
@@ -157,7 +160,7 @@ function go(name) {
   state.armedDelete = null;
   document.body.classList.toggle("wide", name === "side");
   for (const stepper of document.querySelectorAll(".stepper")) renderStepper(stepper);
-  const renderers = {home: renderHome, questions: renderQuestions, builder: renderBuilder, ais: renderAis, start: renderStart, accounts: renderAccounts, side: renderSide};
+  const renderers = {home: renderHome, questions: renderQuestions, builder: renderBuilder, ais: renderAis, start: renderStart, accounts: renderAccounts, side: renderSide, mine: renderMine};
   if (renderers[name]) renderers[name]();
   window.scrollTo(0, 0);
   const heading = document.querySelector(`#${name} h1`);
@@ -210,10 +213,13 @@ function packCard(pack) {
       pack.mine ? null : el("span", {class: "pick-blurb", text: labelOf(pack, "summary")}),
       el("span", {class: "pick-meta", text: questionsText(pack.tasks)})));
   const card = el("div", {class: "card pick" + (selected ? " selected" : "")}, label);
+  if (pack.judged) {
+    card.append(el("p", {class: "muted small", text: t("q.judgedNote")}));
+  }
   if (pack.mine) {
     const armed = state.armedDelete === pack.id;
     card.append(el("div", {class: "card-tools"},
-      el("button", {class: "link", type: "button", text: t("q.edit"), onclick: () => editTest(pack.id)}),
+      pack.judged ? null : el("button", {class: "link", type: "button", text: t("q.edit"), onclick: () => editTest(pack.id)}),
       el("button", {class: "link" + (armed ? " danger" : ""), type: "button", text: armed ? t("q.deleteSure") : t("q.delete"),
         onclick: () => deleteTest(pack.id)})));
   }
@@ -233,6 +239,10 @@ function renderQuestions() {
     svg('<path d="M12 5v14M5 12h14"/>', "icon icon-lg"),
     el("span", {class: "pick-title", text: t("q.new")}),
     el("span", {class: "pick-blurb", text: t("q.newSub")})));
+  mineGrid.append(el("button", {class: "card new-card", type: "button", onclick: () => go("mine")},
+    svg('<path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5z"/><path d="M8.5 11h7M8.5 14h4"/>', "icon icon-lg"),
+    el("span", {class: "pick-title", text: t("q.fromChats")}),
+    el("span", {class: "pick-blurb", text: t("q.fromChatsSub")})));
   for (const pack of mine) mineGrid.append(packCard(pack));
   root.append(mineGrid);
   root.append(el("h2", {class: "group-title", text: t("q.ready")}));
@@ -428,7 +438,8 @@ async function renderAis() {
       }
     }
     const price = (info) => state.costs?.costs?.[info.spec] ?? Infinity;
-    const main = [...newest.values()].sort((a, b) => price(a) - price(b));
+    const suggested = mine.filter((i) => i.suggested);
+    const main = (suggested.length ? suggested : [...newest.values()]).sort((a, b) => price(a) - price(b));
     const older = mine.filter((i) => !main.includes(i)).sort((a, b) => price(a) - price(b) || a.label.localeCompare(b.label));
     const names = PROVIDERS[provider] || {family: provider, maker: provider};
     root.append(el("h2", {class: "group-title", text: t("ai.group", names)}));
@@ -502,6 +513,15 @@ async function refreshEstimate() {
   }
   body.append(rows);
   body.append(el("p", {class: "muted small", text: t("s.totalAnswers", {n: estimate.attempts})}));
+  if (estimate.judge?.spec) {
+    const judgeName = prettyName("model:" + estimate.judge.spec, estimate.judge.spec);
+    body.append(el("p", {class: "muted small", text: estimate.judge.worst_case_usd > 0
+      ? t("s.judgeLine", {judge: judgeName, money: rupees(estimate.judge.worst_case_usd)})
+      : t("s.judgeFree", {judge: judgeName})}));
+  }
+  for (const warning of estimate.warnings || []) {
+    body.append(el("p", {class: "muted small", text: warning}));
+  }
 
   const money = el("div", {class: "money"});
   if (paid) {
@@ -519,6 +539,10 @@ async function refreshEstimate() {
   $("agree").checked = state.agreed;
   $("agree-text").textContent = t("s.agree", {money: rupees(estimate.worst_case_usd)});
 
+  if (estimate.judge?.spec) {
+    const judgeProvider = estimate.judge.spec.split("/")[0];
+    if (PROVIDERS[judgeProvider] && !hasKey(judgeProvider)) missing.add(judgeProvider);
+  }
   const problems = estimate.ok ? [] : (estimate.plain_problems || []).filter((p) => !(missing.size && /API key/.test(p)));
   if (missing.size) {
     for (const provider of missing) problems.unshift(t("ai.needsKey", {maker: PROVIDERS[provider]?.maker || provider}) + ".");
@@ -594,6 +618,10 @@ async function startRun() {
 
 function onProgress(event) {
   if (event && event.kind === "live") return;
+  if (event && event.type === "mining") {
+    if (state.mine.building) $("mine-progress").textContent = t("m.building", {done: event.done, total: event.total});
+    return;
+  }
   const run = state.run;
   if (!run) return;
   if (event.type === "start") {
@@ -667,7 +695,7 @@ function renderReportCard() {
   const packs = state.catalog?.packs || [];
   const pack = packs.find((p) => p.id === report.benchmark?.name);
   $("results-test").textContent = pack ? labelOf(pack, "name") : (report.benchmark?.name || "");
-  $("tab-answers").hidden = !pack?.mine;
+  $("tab-answers").hidden = !(pack?.mine && !pack?.judged);
   const panel = $("panel-card");
   panel.replaceChildren();
   if (report.run?.status && report.run.status !== "completed") panel.append(el("p", {class: "notice", text: t("res.stopped")}));
@@ -816,6 +844,184 @@ function runAgain() {
   go("start");
 }
 
+/* ---------- build a test from your own chats (micro-eval) ---------- */
+
+function mineJudgeSpec() {
+  const pick = $("mine-judge").value;
+  if (pick === "__custom") return $("mine-judge-custom").value.trim();
+  return pick;
+}
+
+function mineLimit() {
+  const value = $("mine-limit").value;
+  return value === "all" ? null : Number(value);
+}
+
+function mineFilesChanged() {
+  state.mine.preview = null;
+  state.mine.estimate = null;
+  state.mine.agreed = false;
+  state.mine.builtSuite = null;
+  renderMine();
+}
+
+function renderMine() {
+  const draft = state.mine;
+  const list = $("mine-files");
+  list.replaceChildren();
+  draft.files.forEach((path, index) => {
+    list.append(el("li", {},
+      el("span", {class: "small", text: path}),
+      el("button", {class: "link", type: "button", text: t("m.removeFile"),
+        onclick: () => { draft.files.splice(index, 1); mineFilesChanged(); }})));
+  });
+  $("mine-choose").hidden = !bridge.isTauri();
+  const found = $("mine-found");
+  if (draft.preview) {
+    const sources = Object.entries(draft.preview.by_source || {})
+      .map(([source, count]) => `${source}: ${count}`).join(", ");
+    found.textContent = t("m.found", {prompts: draft.preview.prompts, conversations: draft.preview.conversations, sources});
+  } else if (!found.dataset.busy) {
+    found.textContent = "";
+  }
+  $("mine-step2").hidden = !draft.preview;
+  $("mine-step3").hidden = !draft.preview;
+  if (!draft.preview) return;
+
+  const judgePick = $("mine-judge");
+  const keep = judgePick.value;
+  judgePick.replaceChildren();
+  const models = (state.catalog?.models || []).filter((m) => m.runnable && !m.free);
+  for (const model of models) {
+    const spec = model.spec.replace(/^model:/, "");
+    judgePick.append(el("option", {value: spec, text: `${prettyName(model.spec)} (${spec})`}));
+  }
+  judgePick.append(el("option", {value: "__custom", text: t("m.judgeCustom")}));
+  const preferred = ["openrouter/openai/gpt-5-mini", "anthropic/claude-haiku-4-5", "openai/gpt-5-mini"]
+    .find((spec) => models.some((m) => m.spec === "model:" + spec && hasKey(m.provider)));
+  judgePick.value = [...judgePick.options].some((o) => o.value === keep) ? keep : (preferred || judgePick.options[0]?.value || "__custom");
+  $("mine-judge-custom-wrap").hidden = judgePick.value !== "__custom";
+
+  const limit = $("mine-limit");
+  if (!limit.options.length || limit.dataset.lang !== kmLang) {
+    limit.replaceChildren(...["50", "200", "1000", "all"].map((value) =>
+      el("option", {value, text: value === "all" ? t("m.limitAll") : value})));
+    limit.value = "200";
+    limit.dataset.lang = kmLang;
+  }
+  renderMineCost();
+}
+
+function renderMineCost() {
+  const draft = state.mine;
+  const box = $("mine-cost");
+  box.replaceChildren();
+  const estimate = draft.estimate;
+  $("mine-build").disabled = true;
+  $("mine-agree-wrap").hidden = true;
+  if (!estimate) return;
+  if (estimate.worst_case_usd === null || estimate.worst_case_usd === undefined) {
+    const problems = (estimate.plain_problems || []).join(" ");
+    box.append(el("p", {class: "small", text: problems || t("m.needJudge")}));
+    const provider = (estimate.judge || "").split("/")[0];
+    if (PROVIDERS[provider] && !hasKey(provider)) {
+      box.append(el("button", {class: "link", type: "button", text: `${t("ai.needsKey", {maker: PROVIDERS[provider].maker})} · ${t("ai.connect")}`,
+        onclick: () => openConnect(provider)}));
+    }
+    return;
+  }
+  box.append(el("p", {class: "small", text: t("m.selectedNote", {
+    selected: estimate.selected, prompts: estimate.prompts,
+    duplicates: estimate.duplicates, oversized: estimate.oversized})}));
+  box.append(el("p", {class: estimate.paid ? "money-big" : "small", text: estimate.paid
+    ? t("m.costLine", {n: estimate.selected, judge: estimate.judge, money: rupees(estimate.worst_case_usd)})
+    : t("m.costFree")}));
+  if (estimate.paid) {
+    $("mine-agree-wrap").hidden = false;
+    $("mine-agree").checked = draft.agreed;
+    $("mine-agree-text").textContent = t("m.agree", {money: rupees(estimate.worst_case_usd)});
+  }
+  $("mine-build").disabled = draft.building || (estimate.paid && !draft.agreed);
+}
+
+async function mineLook() {
+  const draft = state.mine;
+  if (!draft.files.length) { showNotice(t("m.needFiles")); return; }
+  const found = $("mine-found");
+  found.dataset.busy = "1";
+  found.textContent = t("m.looking");
+  try {
+    draft.preview = await bridge.call("history_preview", {paths: draft.files});
+    draft.estimate = null;
+    draft.agreed = false;
+  } catch (error) {
+    draft.preview = null;
+    showNotice(error.message);
+  } finally {
+    delete found.dataset.busy;
+  }
+  renderMine();
+}
+
+async function minePrice() {
+  const draft = state.mine;
+  if (!draft.preview) { showNotice(t("m.needLook")); return; }
+  const judge = mineJudgeSpec();
+  if (!judge) { showNotice(t("m.needJudge")); return; }
+  $("mine-cost").replaceChildren(el("p", {class: "muted small", text: t("m.pricing")}));
+  try {
+    draft.estimate = await bridge.call("micro_eval_estimate", {
+      paths: draft.files, judge, limit: mineLimit(),
+    });
+    draft.agreed = false;
+  } catch (error) {
+    draft.estimate = null;
+    showNotice(error.message);
+  }
+  renderMineCost();
+}
+
+async function mineBuild() {
+  const draft = state.mine;
+  if (!draft.estimate) { showNotice(t("m.needPrice")); return; }
+  const judge = mineJudgeSpec();
+  draft.building = true;
+  draft.builtSuite = null;
+  $("mine-result").replaceChildren();
+  $("mine-progress").textContent = t("m.building", {done: 0, total: draft.estimate.selected});
+  renderMineCost();
+  try {
+    const result = await bridge.call("micro_eval", {
+      paths: draft.files,
+      judge,
+      name: $("mine-name").value.trim(),
+      limit: mineLimit(),
+      max_usd: Math.max(draft.estimate.worst_case_usd || 0, 0) || 1,
+      confirmed: true,
+    });
+    const box = $("mine-result");
+    box.replaceChildren(
+      el("p", {class: "small", text: t("m.counts", {
+        checked: result.checked, correct: result.correct,
+        unclear: result.unclear, errors: result.errors})}));
+    if (result.built) {
+      draft.builtSuite = result.suite_id;
+      await refreshCatalog();
+      box.append(el("p", {text: t("m.built", {tasks: result.tasks})}),
+        el("button", {class: "primary", type: "button", text: t("m.pickAis"),
+          onclick: () => { state.pack = result.suite_id; savePicks(); go("ais"); }}));
+    } else {
+      box.append(el("p", {text: t("m.noneBuilt")}));
+    }
+  } catch (error) {
+    showNotice(error.message);
+  } finally {
+    draft.building = false;
+    $("mine-progress").textContent = "";
+    renderMineCost();
+  }
+}
+
 /* ---------- AI accounts ---------- */
 
 function providerCard(provider, onSaved) {
@@ -850,6 +1056,7 @@ function providerCard(provider, onSaved) {
     el("li", {text: t("acc.step2")}),
     el("li", {text: t("acc.step3")}));
   return el("article", {class: "card provider" + (saved ? " selected" : "")},
+    provider.recommended ? el("span", {class: "badge", text: t("acc.recommended")}) : null,
     el("div", {class: "provider-head"},
       el("h2", {text: provider.name}),
       el("span", {class: "pill" + (saved ? " on" : ""), text: saved ? "✓ " + t("acc.connected") : t("acc.notConnected")})),
@@ -861,9 +1068,10 @@ function providerCard(provider, onSaved) {
 }
 
 function usefulProviders() {
-  const runnable = new Set((state.catalog?.models || []).filter((m) => m.runnable && !m.free).map((m) => m.provider));
+  // Every company is a first-class card: each one either runs tests
+  // directly or, for OpenRouter, reaches the other labs' AIs.
   const all = (state.catalog?.providers || []).filter((p) => PROVIDERS[p.id]);
-  return {main: all.filter((p) => runnable.has(p.id)), other: all.filter((p) => !runnable.has(p.id))};
+  return {main: all, other: []};
 }
 
 function renderAccounts() {
@@ -928,6 +1136,39 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("home-side").addEventListener("click", () => go("side"));
   $("side-link").addEventListener("click", () => { if (!state.busy) go("side"); });
   $("home-write").addEventListener("click", () => newTest());
+  $("home-mine").addEventListener("click", () => go("mine"));
+  $("mine-choose").addEventListener("click", async () => {
+    try {
+      const picked = await bridge.pickFiles();
+      if (picked && picked.length) {
+        state.mine.files = [...new Set([...state.mine.files, ...picked])];
+        mineFilesChanged();
+      }
+    } catch (error) {
+      showNotice(error.message || String(error));
+    }
+  });
+  const addMinePath = () => {
+    const path = $("mine-path").value.trim();
+    if (!path) return;
+    if (!state.mine.files.includes(path)) state.mine.files.push(path);
+    $("mine-path").value = "";
+    mineFilesChanged();
+  };
+  $("mine-add-path").addEventListener("click", addMinePath);
+  $("mine-path").addEventListener("keydown", (event) => { if (event.key === "Enter") addMinePath(); });
+  $("mine-look").addEventListener("click", mineLook);
+  $("mine-price").addEventListener("click", minePrice);
+  $("mine-build").addEventListener("click", mineBuild);
+  $("mine-agree").addEventListener("change", (event) => { state.mine.agreed = event.target.checked; renderMineCost(); });
+  $("mine-judge").addEventListener("change", () => {
+    $("mine-judge-custom-wrap").hidden = $("mine-judge").value !== "__custom";
+    state.mine.estimate = null;
+    state.mine.agreed = false;
+    renderMineCost();
+  });
+  $("mine-judge-custom").addEventListener("input", () => { state.mine.estimate = null; renderMineCost(); });
+  $("mine-limit").addEventListener("change", () => { state.mine.estimate = null; state.mine.agreed = false; renderMineCost(); });
   for (const button of document.querySelectorAll("[data-goto]")) {
     button.addEventListener("click", () => go(button.dataset.goto));
   }

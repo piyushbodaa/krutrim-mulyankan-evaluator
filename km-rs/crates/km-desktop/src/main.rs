@@ -46,7 +46,16 @@ fn honesty() -> Value {
 }
 
 fn providers() -> Value {
+    // OpenRouter first: one key reaches models from every lab below, so it
+    // is the shortest path to a real test. Direct lab keys follow.
     let rows: &[(&str, &str, &str, &str, &str)] = &[
+        (
+            "openrouter",
+            "OpenRouter",
+            "One key for AIs from OpenAI, Anthropic, Google, Meta and more. You are billed per token.",
+            "OpenAI, Anthropic, Google, Meta और अन्य के एआई के लिए एक कुंजी। शुल्क प्रति टोकन लगता है।",
+            "https://openrouter.ai/keys",
+        ),
         (
             "openai",
             "OpenAI",
@@ -76,13 +85,6 @@ fn providers() -> Value {
             "https://console.x.ai/",
         ),
         (
-            "openrouter",
-            "OpenRouter",
-            "One key that can call many models.",
-            "एक कुंजी से कई मॉडल चल सकते हैं।",
-            "https://openrouter.ai/keys",
-        ),
-        (
             "compatible",
             "Other compatible API",
             "A service that speaks the OpenAI API. You also set its address.",
@@ -94,7 +96,7 @@ fn providers() -> Value {
         rows.iter()
             .map(|(id, name, blurb, blurb_hi, signup)| {
                 json!({"id": id, "name": name, "blurb": blurb, "blurb_hi": blurb_hi,
-                       "signup": signup,
+                       "signup": signup, "recommended": *id == "openrouter",
                        "env": key_env(id)})
             })
             .collect(),
@@ -264,6 +266,144 @@ impl Session {
             None
         };
         load_prices(p).unwrap_or_default()
+    }
+
+    /// Bundled prices, plus OpenRouter's live list when a requested
+    /// `openrouter/<model>` spec has no bundled price yet. The fetch is
+    /// best-effort and cached with the side-by-side model list; a model
+    /// that stays unpriced is still refused before any call.
+    fn prices_for(&self, specs: &[String]) -> PriceTable {
+        let mut table = self.prices();
+        let missing = specs.iter().any(|spec| {
+            let bare = spec.strip_prefix("model:").unwrap_or(spec);
+            match bare.split_once('/') {
+                Some(("openrouter", model)) => table.lookup("openrouter", model).is_none(),
+                _ => false,
+            }
+        });
+        if !missing {
+            return table;
+        }
+        if let Ok(payload) = self.live_models() {
+            let doc = json!({"data": payload["models"].as_array().map(|rows| {
+                rows.iter().map(|row| json!({
+                    "id": row["id"],
+                    "pricing": {
+                        "prompt": row["input_usd"],
+                        "completion": row["output_usd"],
+                    }}))
+                .collect::<Vec<_>>()
+            }).unwrap_or_default()});
+            for (key, price) in krutrim_evaluator::pricing::openrouter_prices(&doc).prices {
+                table.prices.entry(key).or_insert(price);
+            }
+        }
+        table
+    }
+
+    /// The judge a suite's `llm_judge` tasks need: an explicit `judge`
+    /// param, then MJ_JUDGE, then the judge recorded on the tasks
+    /// (micro-evals record theirs at mining time).
+    fn judge_for(&self, suite: &Suite, params: &Map<String, Value>) -> Option<String> {
+        if let Some(spec) = params
+            .get("judge")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            return Some(spec.to_string());
+        }
+        if let Some(spec) = self
+            .env_snapshot()
+            .get("MJ_JUDGE")
+            .filter(|s| !s.is_empty())
+            .cloned()
+        {
+            return Some(spec);
+        }
+        suite.tasks.iter().find_map(|task| match &task.grader {
+            GraderSpec::LlmJudge { judge_model, .. } => judge_model.clone(),
+            _ => None,
+        })
+    }
+
+    /// Worst-case grading cost for the suite's judge-graded tasks, and the
+    /// reasons the judge cannot run. A suite where only some tasks need a
+    /// judge keeps the CLI's behaviour (those answers stay pending, with a
+    /// warning); a suite where every task needs one (a micro-eval) is
+    /// refused instead of spending runner money on unmarkable answers.
+    fn judge_check(
+        &self,
+        suite: &Suite,
+        params: &Map<String, Value>,
+        runner_count: usize,
+        repeats: i64,
+        prices: &PriceTable,
+    ) -> (Option<String>, Option<f64>, Vec<String>, Vec<String>) {
+        let judged: Vec<&Task> = suite
+            .tasks
+            .iter()
+            .filter(|t| matches!(t.grader, GraderSpec::LlmJudge { .. }))
+            .collect();
+        if judged.is_empty() {
+            return (None, Some(0.0), Vec::new(), Vec::new());
+        }
+        let required = judged.len() == suite.tasks.len();
+        let pending = || {
+            vec![
+                "Some answers need an AI judge to mark them; without one they stay unmarked."
+                    .to_string(),
+            ]
+        };
+        let Some(spec) = self.judge_for(suite, params) else {
+            return if required {
+                (
+                    None,
+                    None,
+                    vec![
+                        "These questions are marked by an AI judge, and no judge is set. \
+                     Connect a key, then try again. Nothing was called."
+                            .into(),
+                    ],
+                    Vec::new(),
+                )
+            } else {
+                (None, Some(0.0), Vec::new(), pending())
+            };
+        };
+        let problems = krutrim_evaluator::judge::judge_problems(&spec, &self.env_snapshot());
+        if !problems.is_empty() {
+            return if required {
+                (Some(spec), None, problems, Vec::new())
+            } else {
+                (None, Some(0.0), Vec::new(), pending())
+            };
+        }
+        let cost = krutrim_evaluator::judge::parse_judge_spec(&spec)
+            .ok()
+            .and_then(|(provider, model)| prices.lookup(provider, model))
+            .map(|price| {
+                let per_task: f64 = judged
+                    .iter()
+                    .map(|task| {
+                        let material = format!(
+                            "{}\n{}\n{}",
+                            task.prompt,
+                            task.rubric.clone().unwrap_or_default(),
+                            task.reference.clone().unwrap_or_default()
+                        );
+                        price.cost(
+                            krutrim_evaluator::pricing::max_input_tokens(&material),
+                            krutrim_evaluator::judge::DEFAULT_JUDGE_MAX_TOKENS,
+                        )
+                    })
+                    .sum();
+                per_task * runner_count as f64 * repeats as f64
+            });
+        match cost {
+            Some(_) => (Some(spec), cost, Vec::new(), Vec::new()),
+            None if required => (Some(spec), None, Vec::new(), Vec::new()),
+            None => (None, Some(0.0), Vec::new(), pending()),
+        }
     }
 
     fn suites(&self) -> Result<Vec<Suite>, String> {
@@ -503,7 +643,26 @@ impl Session {
                 "free": true, "suggested": true, "runnable": true,
                 "price_usd": {"input": 0, "output": 0}}));
         }
-        const SUGGESTED: &[&str] = &["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"];
+        const SUGGESTED: &[&str] = &[
+            "anthropic/claude-haiku-4-5",
+            "anthropic/claude-sonnet-4-6",
+            "anthropic/claude-opus-4-6",
+            "openai/gpt-5",
+            "openai/gpt-5-mini",
+            "openai/gpt-4o-mini",
+            "gemini/gemini-2.5-pro",
+            "gemini/gemini-2.5-flash",
+            "xai/grok-4.20",
+            "openrouter/anthropic/claude-sonnet-4.6",
+            "openrouter/anthropic/claude-haiku-4.5",
+            "openrouter/openai/gpt-5",
+            "openrouter/openai/gpt-5-mini",
+            "openrouter/google/gemini-2.5-flash",
+            "openrouter/google/gemini-2.5-pro",
+            "openrouter/deepseek/deepseek-chat",
+            "openrouter/meta-llama/llama-4-maverick",
+            "openrouter/x-ai/grok-4.20",
+        ];
         for (key, price) in &prices.prices {
             let Some((provider, model)) = key.split_once('/') else {
                 continue;
@@ -517,7 +676,7 @@ impl Session {
                 "spec": format!("model:{provider}/{model}"), "name": pretty, "name_hi": pretty,
                 "model": model,
                 "provider": provider, "blurb": blurb, "blurb_hi": blurb, "free": false,
-                "suggested": SUGGESTED.contains(&model), "runnable": true,
+                "suggested": SUGGESTED.contains(&key.as_str()), "runnable": true,
                 "price_usd": {"input": price.input, "output": price.output},
                 "price_as_of": price.as_of}));
         }
@@ -549,11 +708,30 @@ impl Session {
         let mut packs = Vec::new();
         for suite in self.suites()? {
             let mine = self.is_mine(&suite);
+            let judged = suite
+                .tasks
+                .iter()
+                .any(|t| matches!(t.grader, GraderSpec::LlmJudge { .. }));
             let (name, name_hi, badge, summary, summary_hi) = if mine {
+                // Hand-written tests keep their name in the description.
+                // Mined micro-evals carry a long fixed description instead,
+                // so theirs reads from the suite id ("my-work-chats").
+                let display = if suite.description.chars().count() <= 80 {
+                    suite.description.clone()
+                } else {
+                    suite
+                        .name
+                        .trim_start_matches(MY_TEST_PREFIX)
+                        .replace('-', " ")
+                };
                 (
-                    suite.description.clone(),
-                    suite.description.clone(),
-                    "My test".to_string(),
+                    display.clone(),
+                    display,
+                    if judged {
+                        "From my chats".to_string()
+                    } else {
+                        "My test".to_string()
+                    },
                     String::new(),
                     String::new(),
                 )
@@ -567,7 +745,7 @@ impl Session {
             packs.push(json!({
                 "id": suite.name, "name": name, "name_hi": name_hi, "badge": badge,
                 "summary": summary, "summary_hi": summary_hi,
-                "recommended": suite.name == "india-pilot", "mine": mine,
+                "recommended": suite.name == "india-pilot", "mine": mine, "judged": judged,
                 "tasks": suite.tasks.len(), "languages": languages,
                 "validation_status": suite.validation_status}));
         }
@@ -608,12 +786,34 @@ impl Session {
         if !max_usd.is_finite() || max_usd < 0.0 {
             return Err("The spending cap must be zero or more.".into());
         }
-        let prices = self.prices();
+        let mut priced_specs = specs.clone();
+        if let Some(judge) = self.judge_for(&loaded, params) {
+            priced_specs.push(judge);
+        }
+        let prices = self.prices_for(&priced_specs);
         let mut built = Vec::new();
         for spec in &specs {
             built.push(self.runner(spec, &prices)?);
         }
         let check = preflight(&loaded.tasks, &built, max_usd, repeats);
+        let (judge_spec, judge_cost, judge_problems, judge_warnings) =
+            self.judge_check(&loaded, params, built.len(), repeats, &prices);
+        let mut warnings = check.warnings.clone();
+        warnings.extend(judge_warnings);
+        let mut problems = check.problems.clone();
+        problems.extend(judge_problems.iter().cloned());
+        if judge_spec.is_some() && judge_cost.is_none() && judge_problems.is_empty() {
+            problems.push(format!(
+                "no price for judge {}; grading cost is unknown, so the run is refused",
+                judge_spec.as_deref().unwrap_or_default()
+            ));
+        }
+        let judge_usd = judge_cost.unwrap_or(0.0);
+        let total_worst = check.worst_case_usd + judge_usd;
+        if judge_cost.is_some() && total_worst > max_usd && check.ok() {
+            problems.push("worst-case cost including the marking judge exceeds the cap".into());
+        }
+        let ok = check.ok() && problems.len() == check.problems.len() && judge_cost.is_some();
         let rate = settings.usd_to_inr;
         let names = self.names.lock().unwrap().clone();
         let mut rows = Vec::new();
@@ -638,21 +838,46 @@ impl Session {
                 "plain_problems": problems.iter().map(|p| plain_problem(p)).collect::<Vec<_>>()}));
         }
         Ok(json!({
-            "ok": check.ok(), "problems": check.problems,
-            "plain_problems": check.problems.iter().map(|p| plain_problem(p)).collect::<Vec<_>>(),
-            "warnings": check.warnings,
-            "worst_case_usd": check.worst_case_usd,
-            "worst_case_inr": check.worst_case_usd * rate,
+            "ok": ok, "problems": problems,
+            "plain_problems": problems.iter().map(|p| plain_problem(p)).collect::<Vec<_>>(),
+            "warnings": warnings,
+            "worst_case_usd": total_worst,
+            "worst_case_inr": total_worst * rate,
+            "judge": judge_spec.map(|spec| json!({
+                "spec": spec, "worst_case_usd": judge_cost,
+                "worst_case_inr": judge_cost.map(|c| c * rate)})),
             "cap_usd": max_usd, "cap_inr": max_usd * rate,
             "usd_to_inr": rate, "fx_note": "Configured rate, not a live bank rate.",
             "attempts": loaded.tasks.len() as i64 * built.len() as i64 * repeats,
-            "repeats": repeats, "paid": check.worst_case_usd > 0.0,
+            "repeats": repeats, "paid": total_worst > 0.0,
             "runners": rows, "honesty": honesty(), "pack": loaded.name}))
     }
 }
 
 /// "claude-haiku-4-5" -> "Claude Haiku 4.5"; other ids stay as they are.
+/// OpenRouter ids carry a lab prefix ("anthropic/claude-sonnet-4.6"); the
+/// pretty name drops it, since the picker already groups by account.
 fn pretty_model(model: &str) -> String {
+    let model = model.rsplit('/').next().unwrap_or(model);
+    if let Some(rest) = model.strip_prefix("claude-") {
+        if let Some((family, version)) = rest.split_once('-') {
+            if family.chars().all(|c| c.is_ascii_lowercase())
+                && !version.is_empty()
+                && version
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '-' || c == '.')
+                && version.matches('-').count() <= 1
+                && !version.contains("..")
+            {
+                return format!(
+                    "Claude {}{} {}",
+                    family[..1].to_uppercase(),
+                    &family[1..],
+                    version.replace('-', ".")
+                );
+            }
+        }
+    }
     let parts: Vec<&str> = model.split('-').collect();
     let numeric = |s: &&str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
     match parts.as_slice() {
@@ -944,7 +1169,13 @@ impl Session {
         }
         let settings = self.fx_settings(params.get("usd_to_inr").and_then(|v| v.as_f64()))?;
         let loaded = self.load_named(params.get("suite").and_then(|v| v.as_str()).unwrap_or(""))?;
-        let prices = self.prices();
+        let judge_spec = estimate["judge"]["spec"].as_str().map(|s| s.to_string());
+        let judge_usd = estimate["judge"]["worst_case_usd"].as_f64().unwrap_or(0.0);
+        let mut priced_specs = self.clean_specs(params)?;
+        if let Some(spec) = &judge_spec {
+            priced_specs.push(spec.clone());
+        }
+        let prices = self.prices_for(&priced_specs);
         let specs = self.clean_specs(params)?;
         let mut built = Vec::new();
         for spec in &specs {
@@ -971,6 +1202,8 @@ impl Session {
             total,
             &titles,
             emit_progress,
+            judge_spec.as_deref(),
+            judge_usd,
         );
         *self.busy.lock().unwrap() = false;
         result
@@ -986,6 +1219,8 @@ impl Session {
         total: i64,
         titles: &BTreeMap<String, String>,
         emit_progress: &Emit,
+        judge_spec: Option<&str>,
+        judge_usd: f64,
     ) -> Result<Value, String> {
         let repeats = params.get("repeats").and_then(|v| v.as_i64()).unwrap_or(1);
         let max_usd = params
@@ -1019,11 +1254,21 @@ impl Session {
                 "grade_status": record.grade_status, "latency_s": record.latency_s,
                 "error": record.error.as_ref().map(|e| self.scrub(e))}));
         };
+        // Judge-graded suites (micro-evals) are marked by the judge recorded
+        // on the suite. Its worst-case cost was reserved in the estimate, so
+        // the runners' own cap is what's left of the user's cap.
+        let judge = match judge_spec {
+            Some(spec) => Some(krutrim_evaluator::judge::make_judge(
+                spec,
+                &self.env_snapshot(),
+            )?),
+            None => None,
+        };
         let callbacks = RunCallbacks {
             on_start: Some(&on_start),
             on_attempt: Some(&on_attempt),
             on_result: Some(&on_result),
-            judge: None,
+            judge: judge.as_deref(),
         };
         let store = Store::open(&settings.db_path)?;
         let summary = run_suite(
@@ -1033,7 +1278,7 @@ impl Session {
             settings,
             seed,
             repeats,
-            Some(max_usd),
+            Some((max_usd - judge_usd).max(0.0)),
             None,
             &callbacks,
             Some(self.cancel.clone()),
@@ -1484,8 +1729,268 @@ impl Session {
         let suite = self.mine_named(id)?;
         if let Some(path) = &suite.path {
             std::fs::remove_file(path).map_err(|e| format!("Could not delete the test: {e}"))?;
+            // A micro-eval's private evidence sidecar goes with its suite.
+            let evidence = path.with_extension("evidence.json");
+            let _ = std::fs::remove_file(evidence);
         }
         Ok(json!({"deleted": suite.name}))
+    }
+
+    /// Paths the history importer may read: what the person picked in the
+    /// file dialog (or typed), `~/` expanded, nothing else invented.
+    fn history_paths(&self, params: &Map<String, Value>) -> Result<Vec<PathBuf>, String> {
+        let raw: Vec<String> = params
+            .get("paths")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let paths: Vec<PathBuf> = raw
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                if let Some(rest) = s.strip_prefix("~/") {
+                    let home = self.env_snapshot().get("HOME").cloned().unwrap_or_default();
+                    PathBuf::from(home).join(rest)
+                } else {
+                    PathBuf::from(s)
+                }
+            })
+            .collect();
+        if paths.is_empty() {
+            return Err("Choose at least one export file first.".into());
+        }
+        if paths.len() > 8 {
+            return Err("Choose at most 8 files at a time.".into());
+        }
+        for path in &paths {
+            if !path.exists() {
+                return Err(format!(
+                    "That file is not on this computer: {}",
+                    path.display()
+                ));
+            }
+        }
+        Ok(paths)
+    }
+
+    fn history_pairs(
+        &self,
+        params: &Map<String, Value>,
+    ) -> Result<
+        (
+            Vec<PathBuf>,
+            krutrim_evaluator::history::History,
+            Vec<krutrim_evaluator::history::PromptPair>,
+        ),
+        String,
+    > {
+        let paths = self.history_paths(params)?;
+        let history = krutrim_evaluator::history::load_history(&paths, "auto")
+            .map_err(|e| format!("That export could not be read. {e}"))?;
+        let pairs = history.pairs();
+        Ok((paths, history, pairs))
+    }
+
+    /// Counts only, like `km history`: no prompt text leaves this call.
+    fn history_preview(&self, params: &Map<String, Value>) -> Result<Value, String> {
+        let (_paths, history, pairs) = self.history_pairs(params)?;
+        let mut by_source = Map::new();
+        for (source, count) in history.by_source() {
+            by_source.insert(source, json!(count));
+        }
+        Ok(json!({
+            "conversations": history.conversations.len(),
+            "prompts": pairs.len(),
+            "by_source": by_source,
+        }))
+    }
+
+    fn micro_eval_estimate(&self, params: &Map<String, Value>) -> Result<Value, String> {
+        let (_paths, _history, pairs) = self.history_pairs(params)?;
+        let judge = params
+            .get("judge")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if judge.is_empty() {
+            return Err("Pick the AI that should mark your old answers.".into());
+        }
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        let prices = self.prices_for(std::slice::from_ref(&judge));
+        let problems = krutrim_evaluator::judge::judge_problems(&judge, &self.env_snapshot());
+        let cache = krutrim_evaluator::miner::VerdictCache::load(
+            self.settings.runs_dir.join("judge-cache.jsonl"),
+        );
+        let worst = if problems.is_empty() {
+            krutrim_evaluator::miner::estimate_judge_cost_usd(
+                &pairs,
+                &judge,
+                &prices,
+                limit,
+                Some(&cache),
+            )?
+        } else {
+            None
+        };
+        let selection = krutrim_evaluator::miner::select_pairs(&pairs, limit);
+        let rate = self.settings.usd_to_inr;
+        Ok(json!({
+            "prompts": pairs.len(), "selected": selection.pairs.len(),
+            "duplicates": selection.duplicates, "oversized": selection.oversized,
+            "judge": judge, "problems": problems,
+            "plain_problems": problems.iter().map(|p| plain_problem(p)).collect::<Vec<_>>(),
+            "worst_case_usd": worst, "worst_case_inr": worst.map(|c| c * rate),
+            "paid": worst.map(|c| c > 0.0).unwrap_or(false),
+            "usd_to_inr": rate,
+        }))
+    }
+
+    /// Mine the person's own chat history into a personal test under
+    /// My tests. Paid judging starts only after `confirmed: true`, with
+    /// the same worst-case cap the estimate showed.
+    fn micro_eval(
+        &self,
+        params: &Map<String, Value>,
+        emit_progress: &Emit,
+    ) -> Result<Value, String> {
+        if params.get("confirmed") != Some(&Value::Bool(true)) {
+            return Err("Confirm the cost first. Nothing was called.".into());
+        }
+        let estimate = self.micro_eval_estimate(params)?;
+        let Some(worst) = estimate["worst_case_usd"].as_f64() else {
+            let plain: Vec<String> = estimate["plain_problems"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            return Err(if plain.is_empty() {
+                "The marking AI has no checked price, so nothing was called.".into()
+            } else {
+                plain.join(" ")
+            });
+        };
+        let max_usd = params
+            .get("max_usd")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0);
+        if !max_usd.is_finite() || max_usd < 0.0 || worst > max_usd {
+            return Err(
+                "The worst-case marking cost is above your spending cap. Nothing was called."
+                    .into(),
+            );
+        }
+        let judge_spec = estimate["judge"].as_str().unwrap_or_default().to_string();
+        let judge = krutrim_evaluator::judge::make_judge(&judge_spec, &self.env_snapshot())?;
+        self.micro_eval_with(params, &judge_spec, judge.as_ref(), emit_progress)
+    }
+
+    fn micro_eval_with(
+        &self,
+        params: &Map<String, Value>,
+        judge_spec: &str,
+        judge: &krutrim_evaluator::judge::JudgeFn,
+        emit_progress: &Emit,
+    ) -> Result<Value, String> {
+        let (_paths, history, pairs) = self.history_pairs(params)?;
+        if pairs.is_empty() {
+            return Err("No questions with answers were found in that export.".into());
+        }
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        let min_confidence = params
+            .get("min_confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.7);
+        {
+            let mut busy = self.busy.lock().unwrap();
+            if *busy {
+                return Err("A check is already running.".into());
+            }
+            *busy = true;
+        }
+        let result = (|| {
+            let mut cache = krutrim_evaluator::miner::VerdictCache::load(
+                self.settings.runs_dir.join("judge-cache.jsonl"),
+            );
+            let progress =
+                |done: usize, total: usize, _pair: &krutrim_evaluator::history::PromptPair| {
+                    emit_progress(json!({"type": "mining", "done": done, "total": total}));
+                };
+            let mined = krutrim_evaluator::miner::mine_failures(
+                &pairs,
+                judge,
+                judge_spec,
+                min_confidence,
+                limit,
+                Some(&progress),
+                Some(&mut cache),
+            )?;
+            if mined.failures.is_empty() {
+                return Ok(json!({
+                    "built": false, "checked": mined.checked, "correct": mined.correct,
+                    "unclear": mined.unclear, "below_threshold": mined.below_threshold,
+                    "errors": mined.errors, "cache_hits": mined.cache_hits,
+                }));
+            }
+            let dir = self.my_tests_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Could not save the test: {e}"))?;
+            let wanted = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let slug: String = wanted
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect::<String>()
+                .split('-')
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("-");
+            let base = if slug.is_empty() {
+                "my-micro-eval".to_string()
+            } else {
+                format!("my-{slug}")
+            };
+            let mut id = base.clone();
+            if dir.join(format!("{id}.yaml")).exists() {
+                let token = tokens::random_token()?;
+                id = format!("{base}-{}", &token[..6]);
+            }
+            let destination = dir.join(format!("{id}.yaml"));
+            let (suite, _evidence) = krutrim_evaluator::microeval::write_micro_eval(
+                &mined.failures,
+                &destination,
+                &id,
+                "1",
+                judge_spec,
+            )?;
+            let _ = history;
+            Ok(json!({
+                "built": true, "suite_id": suite.name, "tasks": suite.tasks.len(),
+                "checked": mined.checked, "correct": mined.correct,
+                "unclear": mined.unclear, "below_threshold": mined.below_threshold,
+                "errors": mined.errors, "cache_hits": mined.cache_hits,
+                "duplicates": mined.duplicates, "oversized": mined.oversized,
+                "judge": judge_spec,
+            }))
+        })();
+        *self.busy.lock().unwrap() = false;
+        result
     }
 
     /// Worst-case cost of one pack for every priced model, so the AI picker
@@ -2141,6 +2646,16 @@ fn dispatch(session: &Arc<Session>, request: &Value, emit: &Emit) {
             "delete_test" => {
                 session.delete_test(params.get("id").and_then(|v| v.as_str()).unwrap_or(""))?
             }
+            "history_preview" => session.history_preview(params)?,
+            "micro_eval_estimate" => session.micro_eval_estimate(params)?,
+            "micro_eval" => {
+                let ident2 = ident.clone();
+                let emit2 = emit.clone();
+                let on_event: Emit = Arc::new(move |event: Value| {
+                    emit2(json!({"id": ident2, "event": "progress", "result": event}));
+                });
+                session.micro_eval(params, &on_event)?
+            }
             "answers" => session.answers(&run_id_param())?,
             "dashboard_url" => json!({
                 "url": session.dashboard_url(
@@ -2205,7 +2720,17 @@ fn main() {
         // Long or networked calls get their own thread so stop, cancel and
         // the rest keep answering meanwhile.
         let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        if ["run", "live_ask", "live_models", "live_status"].contains(&method) {
+        if [
+            "run",
+            "live_ask",
+            "live_models",
+            "live_status",
+            "micro_eval",
+            "micro_eval_estimate",
+            "history_preview",
+        ]
+        .contains(&method)
+        {
             let (session2, emit2) = (session.clone(), emit.clone());
             run_threads.push(std::thread::spawn(move || {
                 dispatch(&session2, &request, &emit2)
@@ -2237,6 +2762,91 @@ mod tests {
             assert!(!built.is_match("something else"), "{answer}");
             assert_eq!(regex_unescape(&regex_escape(answer)), answer);
         }
+    }
+
+    #[test]
+    fn accounts_lead_with_openrouter_and_offer_every_lab() {
+        let rows = providers();
+        let ids: Vec<&str> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["id"].as_str())
+            .collect();
+        assert_eq!(ids.first(), Some(&"openrouter"));
+        assert_eq!(rows[0]["recommended"], Value::Bool(true));
+        for id in ["openai", "anthropic", "gemini", "xai", "compatible"] {
+            assert!(ids.contains(&id), "{id}");
+        }
+        assert_eq!(
+            pretty_model("anthropic/claude-sonnet-4.6"),
+            "Claude Sonnet 4.6"
+        );
+        assert_eq!(pretty_model("openai/gpt-5-mini"), "gpt-5-mini");
+    }
+
+    #[test]
+    fn micro_eval_mines_history_into_my_tests() {
+        let root = std::env::temp_dir().join(format!("km-desktop-test-{}", std::process::id()));
+        let runs = root.join("runs");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&runs).unwrap();
+        let export = root.join("chatgpt-conversations.json");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/history/chatgpt-conversations.json");
+        std::fs::copy(&fixture, &export).unwrap();
+        let session = Session {
+            settings: Settings {
+                runs_dir: runs.clone(),
+                db_path: runs.join("results.db"),
+                suites_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../suites"),
+                prices_path: root.join("prices.yaml"),
+                max_usd: 1.0,
+                usd_to_inr: 88.0,
+            },
+            env: Mutex::new(BTreeMap::new()),
+            root: root.clone(),
+            preview_dir: root.join("preview"),
+            cancel: Arc::new(AtomicBool::new(false)),
+            busy: Arc::new(Mutex::new(false)),
+            token: "test".into(),
+            http_port: Mutex::new(None),
+            external_base: Mutex::new(None),
+            names: Mutex::new(BTreeMap::new()),
+            asks: Mutex::new(BTreeMap::new()),
+            live_models: Mutex::new(None),
+        };
+        let preview = session
+            .history_preview(&serde_json::Map::from_iter([(
+                "paths".into(),
+                json!([export.display().to_string()]),
+            )]))
+            .unwrap();
+        assert!(preview["prompts"].as_u64().unwrap() >= 1);
+        let judge = |prompt: &str| -> Result<String, String> {
+            if prompt.contains("GST") {
+                return Ok(json!({"verdict": "wrong", "confidence": 0.95,
+                    "expected": "50150", "rubric": "Must equal 50150."})
+                .to_string());
+            }
+            Ok(json!({"verdict": "correct", "confidence": 0.9}).to_string())
+        };
+        let emit: Emit = Arc::new(|_| {});
+        let mut params = serde_json::Map::new();
+        params.insert("paths".into(), json!([export.display().to_string()]));
+        params.insert("name".into(), json!("Work chats"));
+        let built = session
+            .micro_eval_with(&params, "ollama/fake-judge", &judge, &emit)
+            .unwrap();
+        assert_eq!(built["built"], Value::Bool(true));
+        let packs = session.catalog().unwrap()["packs"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let pack = packs.iter().find(|p| p["id"] == built["suite_id"]).unwrap();
+        assert_eq!(pack["mine"], Value::Bool(true));
+        assert_eq!(pack["judged"], Value::Bool(true));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
