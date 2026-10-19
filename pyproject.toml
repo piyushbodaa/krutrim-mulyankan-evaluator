@@ -1,6 +1,6 @@
 [project]
 name = "kritrim-mulyankan"
-version = "0.5.0"
+version = "0.6.0"
 description = "Kritrim Mulyankan: a local CLI to test and compare AI models, benchmarks, harnesses and personal agents."
 readme = "README.md"
 license = "MIT"
