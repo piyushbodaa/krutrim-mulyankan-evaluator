@@ -126,24 +126,18 @@ jobs:
           make_latest: true
           fail_on_unmatched_files: true
           files: |
-            release/Krutrim-Mulyankan-linux.AppImage
-            release/Krutrim-Mulyankan-linux.deb
-            release/Krutrim-Mulyankan-linux.rpm
             release/Krutrim-Mulyankan-linux.pkg.tar.zst
-            release/Krutrim-Mulyankan-linux-setup.tar.gz
-            release/km-desktop-linux.tar.gz
             release/km-linux-x86_64.tar.gz
             release/kritrim_mulyankan-*.whl
             release/SHA256SUMS
           body: |
-            Desktop app and standalone Rust CLI for Linux x86_64 only. Each package
-            is built and its evaluation engine smoke-tested before publication.
+            Desktop app for Arch/Omarchy (Linux x86_64) and the standalone
+            Rust CLI. Each package is built and its evaluation engine
+            smoke-tested before publication.
 
-            Desktop: Linux AppImage, Debian/Ubuntu DEB, Fedora/openSUSE RPM,
-            Arch/Omarchy package, portable Linux tar.gz.
-            Linux setup: extract Krutrim-Mulyankan-linux-setup.tar.gz, then open
-            Install Krutrim Mulyankan. It adds the app to your user account and
-            application menu without a terminal or administrator password.
+            Desktop: install the Arch/Omarchy package with
+            `sudo pacman -U Krutrim-Mulyankan-linux.pkg.tar.zst`, then open
+            Krutrim Mulyankan from your application menu.
             CLI: extract the matching km-<platform>-<architecture> archive;
             the executable and bundled suites are included. Python users can
             install the platform-independent wheel.

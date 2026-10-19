@@ -21,15 +21,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOWNLOADS = ROOT / "dist" / "downloads"
+# The Tauri DEB is only the staging payload the Arch package is built from;
+# it is verified like a download but never published.
+STAGING = ROOT / "dist" / "staging"
 ENGINE = ROOT / "desktop" / "src-tauri" / "resources" / "engine"
 PLATFORMS = ("linux-x86_64",)
+# The desktop app ships for Arch/Omarchy only. The CLI archive and the
+# Python wheel are distro-agnostic and stay.
 ASSETS = {
-    "Krutrim-Mulyankan-linux.AppImage",
-    "Krutrim-Mulyankan-linux.deb",
-    "Krutrim-Mulyankan-linux.rpm",
     "Krutrim-Mulyankan-linux.pkg.tar.zst",
-    "Krutrim-Mulyankan-linux-setup.tar.gz",
-    "km-desktop-linux.tar.gz",
     "km-linux-x86_64.tar.gz",
 }
 ARCH_DEPENDS = (
@@ -355,114 +355,26 @@ def package_arch(deb: Path) -> None:
     print("Arch package built and verified")
 
 
-def package_rpm_from_deb(deb: Path) -> None:
-    """Add RPM packaging to an existing release without recompiling its binaries."""
-    with tempfile.TemporaryDirectory(prefix="km-rpm-package-") as temporary:
-        work = Path(temporary)
-        payload = work / "payload"
-        version = stage_native_deb(deb, payload)
-        for name in ("BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"):
-            (work / name).mkdir()
-        archive_payload(payload, work / "SOURCES/payload.tar", source_epoch())
-        config = json.loads((ROOT / "desktop/src-tauri/tauri.linux.conf.json").read_text())
-        dependencies = config["bundle"]["linux"]["rpm"]["depends"]
-        spec = work / "SPECS/krutrim-mulyankan.spec"
-        spec.write_text(
-            "%global _build_id_links none\n%global __os_install_post %{nil}\n"
-            f"Name: krutrim-mulyankan\nVersion: {version}\nRelease: 1\n"
-            "Summary: Check AI models on your own computer\nLicense: MIT\n"
-            "URL: https://krutrimmulyankan.in\nBuildArch: x86_64\nSource0: payload.tar\n"
-            + "".join(f"Requires: {dependency}\n" for dependency in dependencies)
-            + "Recommends: gnome-keyring\n\n%description\n"
-            "Local AI evaluation. Unvalidated pilot. Not a ranking.\n\n"
-            "%prep\n%setup -q -c -n payload\n\n%build\n\n%install\n"
-            "mkdir -p %{buildroot}\ncp -a --no-preserve=ownership usr %{buildroot}/\n\n%files\n"
-            "/usr/bin/krutrim-mulyankan\n/usr/bin/krutrim-mulyankan-desktop\n"
-            '"/usr/lib/Krutrim Mulyankan"\n'
-            f"/usr/share/applications/{DESKTOP_ID}.desktop\n"
-            "/usr/share/icons/hicolor/*/apps/krutrim-mulyankan-desktop.png\n"
-            "/usr/share/licenses/krutrim-mulyankan\n",
-            encoding="utf-8",
-        )
-        run(
-            ["rpmbuild", "-bb", "--define", f"_topdir {work}", spec],
-            env={
-                **os.environ,
-                "SOURCE_DATE_EPOCH": str(source_epoch()),
-            },
-        )
-        package = one((work / "RPMS/x86_64").glob("*.rpm"))
-        metadata = run(
-            ["rpm", "-qp", "--queryformat", "%{NAME} %{VERSION} %{ARCH}", package],
-            capture_output=True,
-        ).stdout
-        require(metadata == f"krutrim-mulyankan {version} x86_64", "Wrong RPM package metadata")
-        requires = run(
-            ["rpm", "-qp", "--requires", package], capture_output=True
-        ).stdout.splitlines()
-        require(set(dependencies) <= set(requires), "Missing RPM runtime dependency")
-        installed = work / "installed"
-        installed.mkdir()
-        run(["bsdtar", "-xf", package, "-C", installed])
-        verify_linux_payload(installed)
-        DOWNLOADS.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(package, DOWNLOADS / "Krutrim-Mulyankan-linux.rpm")
-    print("RPM package built and verified from the released DEB")
-
-
 def package_desktop(target: str, platform: str) -> None:
+    """Verify the Tauri DEB payload and stage it for the Arch package.
+
+    The DEB is an internal staging artifact: its payload is extracted,
+    layout-checked and engine-smoked exactly as a published download
+    would be, then copied to dist/staging/ for `package-arch`. Nothing
+    is written to dist/downloads/ here; the Arch package is the only
+    published desktop artifact.
+    """
     bundle = ROOT / "desktop/src-tauri/target" / target / "release/bundle"
-    DOWNLOADS.mkdir(parents=True, exist_ok=True)
+    STAGING.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="km-desktop-package-") as temporary:
         work = Path(temporary)
-        if platform.startswith("linux"):
-            appimage = one((bundle / "appimage").glob("*.AppImage"))
-            run([appimage, "--appimage-extract"], cwd=work, capture_output=True)
-            extracted = work / "squashfs-root"
-            smoke_engine(packaged_engine(extracted))
-            shutil.copy2(appimage, DOWNLOADS / "Krutrim-Mulyankan-linux.AppImage")
-            version = json.loads((ROOT / "desktop/src-tauri/tauri.conf.json").read_text())[
-                "version"
-            ]
-            run(
-                [
-                    "python3",
-                    ROOT / "desktop/linux-installer/build.py",
-                    "--appimage",
-                    appimage,
-                    "--output",
-                    DOWNLOADS / "Krutrim-Mulyankan-linux-setup.tar.gz",
-                    "--version",
-                    version,
-                    "--icon",
-                    ROOT / "desktop/src-tauri/icons/128x128@2x.png",
-                ]
-            )
-            with tarfile.open(DOWNLOADS / "km-desktop-linux.tar.gz", "w:gz") as archive:
-                archive.add(extracted, arcname=".")
-            deb = one((bundle / "deb").glob("*.deb"))
-            extract_deb(deb, work / "deb")
-            verify_linux_payload(work / "deb")
-            shutil.copy2(deb, DOWNLOADS / "Krutrim-Mulyankan-linux.deb")
-            rpm = one((bundle / "rpm").glob("*.rpm"))
-            metadata = run(
-                ["rpm", "-qp", "--queryformat", "%{NAME} %{VERSION} %{ARCH}", rpm],
-                capture_output=True,
-            ).stdout
-            require(metadata == f"krutrim-mulyankan {version} x86_64", "Wrong RPM package metadata")
-            dependencies = run(
-                ["rpm", "-qp", "--requires", rpm], capture_output=True
-            ).stdout.splitlines()
-            config = json.loads((ROOT / "desktop/src-tauri/tauri.linux.conf.json").read_text())
-            require(
-                set(config["bundle"]["linux"]["rpm"]["depends"]) <= set(dependencies),
-                "Missing RPM runtime dependency",
-            )
-            (work / "rpm").mkdir()
-            run(["bsdtar", "-xf", rpm, "-C", work / "rpm"])
-            verify_linux_payload(work / "rpm")
-            shutil.copy2(rpm, DOWNLOADS / "Krutrim-Mulyankan-linux.rpm")
-    print(f"Desktop packages verified: {platform}")
+        require(platform.startswith("linux"), f"Unsupported desktop platform: {platform}")
+        deb = one((bundle / "deb").glob("*.deb"))
+        extract_deb(deb, work / "deb")
+        verify_linux_payload(work / "deb")
+        smoke_engine(packaged_engine(work / "deb"))
+        shutil.copy2(deb, STAGING / "Krutrim-Mulyankan-linux.deb")
+    print(f"Desktop payload verified and staged: {platform}")
 
 
 def check_versions(version: str) -> None:
@@ -580,10 +492,7 @@ def main() -> None:
     command = commands.add_parser("smoke-engine")
     command.add_argument("--root", type=Path, required=True)
     command = commands.add_parser("package-arch")
-    command.add_argument("--deb", type=Path, default=DOWNLOADS / "Krutrim-Mulyankan-linux.deb")
-    for name in ("package-arch-from-deb", "package-rpm-from-deb"):
-        command = commands.add_parser(name)
-        command.add_argument("--deb", type=Path, required=True)
+    command.add_argument("--deb", type=Path, default=STAGING / "Krutrim-Mulyankan-linux.deb")
     command = commands.add_parser("check-versions")
     command.add_argument("--version", required=True)
     command = commands.add_parser("prepare-release")
@@ -598,8 +507,6 @@ def main() -> None:
     command.add_argument("--version", required=True)
     args = vars(parser.parse_args())
     command = args.pop("command")
-    if command == "package-arch-from-deb":
-        command = "package-arch"
     globals()[command.replace("-", "_")](**args)
 
 

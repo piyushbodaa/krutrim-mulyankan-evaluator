@@ -103,15 +103,15 @@ reuse the At a glance dashboard in `preview/`. Development and unsigned installe
 [desktop/README.md](desktop/README.md). Code signing is a later step
 ([desktop/SIGNING.md](desktop/SIGNING.md)). The `km` command is unchanged.
 
-The native build workflow produces the CLI and desktop app for Linux x86-64
-only. Pull requests and manual
+The native build workflow produces the CLI and the Arch/Omarchy desktop
+package for Linux x86-64 only. Pull requests and manual
 runs upload build artifacts. Merging a version bump to `main`, or pushing a matching
 `v<version>` tag, publishes on GitHub Releases only after every platform passes.
 Check the release assets for current availability.
 
 | Platform | Desktop | CLI archive |
 |---|---|---|
-| Linux x86-64 | `Krutrim-Mulyankan-linux.AppImage`, `Krutrim-Mulyankan-linux.deb` | `km-linux-x86_64.tar.gz` |
+| Arch / Omarchy x86-64 | `Krutrim-Mulyankan-linux.pkg.tar.zst` | `km-linux-x86_64.tar.gz` |
 
 CLI archives contain `km` (or `km.exe`) and `suites/`. They need neither Python nor
 Rust installed. The Python wheel remains a separate option. Releases also include
