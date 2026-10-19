@@ -100,6 +100,13 @@ const bridge = (() => {
     return filename;
   }
 
+  async function pickFiles() {
+    if (isTauri()) {
+      return window.__TAURI__.core.invoke("pick_files");
+    }
+    return null; // Browser preview: the person types the path instead.
+  }
+
   async function openExternal(url) {
     if (isTauri() && window.__TAURI__.opener) {
       await window.__TAURI__.opener.openUrl(url);
@@ -109,7 +116,7 @@ const bridge = (() => {
   }
 
   return {
-    init, call, isTauri, saveKey, saveText, openExternal, dispatch,
+    init, call, isTauri, saveKey, saveText, openExternal, dispatch, pickFiles,
     onProgress(fn) { progressListeners.add(fn); },
   };
 })();

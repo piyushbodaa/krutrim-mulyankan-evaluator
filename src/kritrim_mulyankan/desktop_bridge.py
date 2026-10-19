@@ -23,8 +23,17 @@ from urllib.parse import parse_qs, quote, urlsplit
 from kritrim_mulyankan import __version__
 from kritrim_mulyankan.engine import PreflightError, preflight, run_suite
 from kritrim_mulyankan.export import result_export, write_export
+from kritrim_mulyankan.history import load_history
+from kritrim_mulyankan.judge import judge_problems, make_judge, parse_judge_spec
 from kritrim_mulyankan.local_ui import TITLES
-from kritrim_mulyankan.pricing import load_prices
+from kritrim_mulyankan.microeval import write_micro_eval
+from kritrim_mulyankan.miner import (
+    VerdictCache,
+    estimate_judge_cost_usd,
+    mine_failures,
+    select_pairs,
+)
+from kritrim_mulyankan.pricing import PriceTable, load_prices, max_input_tokens, openrouter_prices
 from kritrim_mulyankan.provenance import redact
 from kritrim_mulyankan.runners import make_runner
 from kritrim_mulyankan.runners.model import ModelRunner
@@ -48,6 +57,19 @@ KEY_ENVS = {
 }
 URL_ENVS = ("OLLAMA_BASE_URL", "VLLM_BASE_URL", "COMPATIBLE_BASE_URL")
 PROVIDERS = [
+    {
+        "id": "openrouter",
+        "name": "OpenRouter",
+        "blurb": (
+            "One key for AIs from OpenAI, Anthropic, Google, Meta and more. "
+            "You are billed per token."
+        ),
+        "blurb_hi": (
+            "OpenAI, Anthropic, Google, Meta और अन्य के एआई के लिए एक कुंजी। शुल्क प्रति टोकन लगता है।"
+        ),
+        "signup": "https://openrouter.ai/keys",
+        "recommended": True,
+    },
     {
         "id": "openai",
         "name": "OpenAI",
@@ -75,13 +97,6 @@ PROVIDERS = [
         "blurb": "For Grok models. You are billed per token.",
         "blurb_hi": "Grok मॉडल के लिए। शुल्क प्रति टोकन लगता है।",
         "signup": "https://console.x.ai/",
-    },
-    {
-        "id": "openrouter",
-        "name": "OpenRouter",
-        "blurb": "One key that can call many models.",
-        "blurb_hi": "एक कुंजी से कई मॉडल चल सकते हैं।",
-        "signup": "https://openrouter.ai/keys",
     },
     {
         "id": "compatible",
@@ -113,7 +128,26 @@ FREE_MODELS = [
         "suggested": True,
     },
 ]
-SUGGESTED = {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"}
+SUGGESTED = {
+    "anthropic/claude-haiku-4-5",
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-opus-4-6",
+    "openai/gpt-5",
+    "openai/gpt-5-mini",
+    "openai/gpt-4o-mini",
+    "gemini/gemini-2.5-pro",
+    "gemini/gemini-2.5-flash",
+    "xai/grok-4.20",
+    "openrouter/anthropic/claude-sonnet-4.6",
+    "openrouter/anthropic/claude-haiku-4.5",
+    "openrouter/openai/gpt-5",
+    "openrouter/openai/gpt-5-mini",
+    "openrouter/google/gemini-2.5-flash",
+    "openrouter/google/gemini-2.5-pro",
+    "openrouter/deepseek/deepseek-chat",
+    "openrouter/meta-llama/llama-4-maverick",
+    "openrouter/x-ai/grok-4.20",
+}
 MODEL_BLURB = {
     "claude-haiku-4-5": "A smaller Claude model. Lower price per token.",
     "claude-haiku-5-5": "A smaller Claude model. Lower price per token.",
@@ -266,6 +300,8 @@ class DesktopSession:
         self._httpd: ThreadingHTTPServer | None = None
         self._external_base: str | None = None
         self._names: dict[str, str] = {}
+        self._live_prices: PriceTable | None = None
+        self._live_prices_at: float = 0.0
 
     def close(self) -> None:
         if self._httpd is not None:
@@ -326,10 +362,120 @@ class DesktopSession:
         path = self.settings.prices_path
         return load_prices(path if path.is_file() else None)
 
+    def _fetch_openrouter_prices(self) -> PriceTable:
+        """OpenRouter's public price list, fetched at most every 10 minutes."""
+        import time as _time
+        import urllib.request
+
+        if self._live_prices is not None and _time.time() - self._live_prices_at < 600:
+            return self._live_prices
+        base = self.env.get("KM_OPENROUTER_BASE") or "https://openrouter.ai/api/v1"
+        request = urllib.request.Request(
+            f"{base.rstrip('/')}/models",
+            headers={"HTTP-Referer": "https://krutrimmulyankan.in", "X-Title": "Krutrim Mulyankan"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - fixed host
+            table = openrouter_prices(json.loads(response.read()))
+        self._live_prices = table
+        self._live_prices_at = _time.time()
+        return table
+
+    def _prices_for(self, specs: list[str]):
+        """Bundled prices, plus OpenRouter's live list when a requested
+        `openrouter/<model>` spec has no bundled price yet. A model that
+        stays unpriced is still refused before any call."""
+        table = self._prices()
+        missing = False
+        for spec in specs:
+            bare = spec.removeprefix("model:")
+            provider, _, model = bare.partition("/")
+            if provider == "openrouter" and model and table.lookup(provider, model) is None:
+                missing = True
+        if missing:
+            try:
+                live = self._fetch_openrouter_prices()
+                table = PriceTable({**live.prices, **table.prices})
+            except Exception:  # noqa: BLE001 - offline: bundled prices still apply
+                pass
+        return table
+
+    def my_tests_dir(self) -> Path:
+        override = self.env.get("MJ_MY_TESTS_DIR")
+        return Path(override) if override else self.settings.runs_dir / "my-tests"
+
+    def _is_mine(self, suite: Suite) -> bool:
+        return suite.path is not None and suite.path.parent == self.my_tests_dir()
+
+    def _judge_for(self, suite: Suite, judge: str | None = None) -> str | None:
+        if judge:
+            return judge
+        if self.env.get("MJ_JUDGE"):
+            return self.env["MJ_JUDGE"]
+        for task in suite.tasks:
+            if task.grader.type == "llm_judge" and task.grader.judge_model:
+                return task.grader.judge_model
+        return None
+
+    def _judge_check(self, suite, runners_count, repeats, prices, judge=None):
+        """(judge spec, worst-case grading cost, problems, warnings).
+
+        A suite where only some tasks need a judge (the example pack) keeps
+        the CLI's behaviour: without a usable judge those answers stay
+        pending. A suite where every task needs one (a micro-eval) is
+        refused instead of spending runner money on unmarkable answers.
+        """
+        from kritrim_mulyankan.judge import DEFAULT_JUDGE_MAX_TOKENS
+
+        judged = [t for t in suite.tasks if t.grader.type == "llm_judge"]
+        if not judged:
+            return None, 0.0, [], []
+        required = len(judged) == len(suite.tasks)
+        pending = ["Some answers need an AI judge to mark them; without one they stay unmarked."]
+        spec = self._judge_for(suite, judge)
+        if not spec:
+            if required:
+                return (
+                    None,
+                    None,
+                    [
+                        "These questions are marked by an AI judge, and no judge is set. "
+                        "Connect a key, then try again. Nothing was called."
+                    ],
+                    [],
+                )
+            return None, 0.0, [], pending
+        problems = judge_problems(spec, self.env)
+        if problems:
+            return (spec, None, problems, []) if required else (None, 0.0, [], pending)
+        provider, model = parse_judge_spec(spec)
+        price = prices.lookup(provider, model)
+        if price is None:
+            return (spec, None, [], []) if required else (None, 0.0, [], pending)
+        per_task = sum(
+            price.cost(
+                max_input_tokens(f"{t.prompt}\n{t.rubric or ''}\n{t.reference or ''}"),
+                DEFAULT_JUDGE_MAX_TOKENS,
+            )
+            for t in judged
+        )
+        return spec, per_task * runners_count * repeats, [], []
+
     def _suites(self) -> list[Suite]:
         suites = [load_suite(path) for path in discover_suites(self.settings.suites_dir)]
         rank = {name: index for index, name in enumerate(PACK_ORDER)}
-        return sorted(suites, key=lambda suite: (rank.get(suite.name, len(rank)), suite.name))
+        suites = sorted(suites, key=lambda suite: (rank.get(suite.name, len(rank)), suite.name))
+        # Tests built in the app (hand-written or mined micro-evals) live
+        # apart; a broken file there must never hide the ready-made packs.
+        builtin = {suite.name for suite in suites}
+        mine: list[Suite] = []
+        for path in discover_suites(self.my_tests_dir()):
+            try:
+                suite = load_suite(path)
+            except Exception:  # noqa: BLE001 - skip, like the Rust engine
+                continue
+            if suite.name.startswith("my-") and suite.name not in builtin:
+                mine.append(suite)
+        return suites + mine
 
     def _load_named(self, name: str) -> Suite:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}", name):
@@ -374,13 +520,14 @@ class DesktopSession:
             models.append(
                 {
                     "spec": f"model:{provider}/{model}",
-                    "name": model,
-                    "name_hi": model,
+                    "name": model.rsplit("/", 1)[-1],
+                    "name_hi": model.rsplit("/", 1)[-1],
+                    "model": model,
                     "provider": provider,
                     "blurb": blurb,
                     "blurb_hi": blurb,
                     "free": False,
-                    "suggested": model in SUGGESTED,
+                    "suggested": key in SUGGESTED,
                     "runnable": True,
                     "price_usd": {"input": price.input, "output": price.output},
                     "price_as_of": price.as_of,
@@ -418,15 +565,34 @@ class DesktopSession:
         for suite in self._suites():
             copy = PACK_COPY.get(suite.name, {})
             languages = sorted({task.language for task in suite.tasks})
+            mine = self._is_mine(suite)
+            judged = any(task.grader.type == "llm_judge" for task in suite.tasks)
+            if mine:
+                display = (
+                    suite.description
+                    if len(suite.description) <= 80
+                    else suite.name.removeprefix("my-").replace("-", " ")
+                )
+                name = name_hi = display
+                badge = "From my chats" if judged else "My test"
+                summary = summary_hi = ""
+            else:
+                name = copy.get("name", suite.name)
+                name_hi = copy.get("name_hi", suite.name)
+                badge = copy.get("badge", suite.validation_status)
+                summary = copy.get("summary", suite.description)
+                summary_hi = copy.get("summary_hi", suite.description)
             packs.append(
                 {
                     "id": suite.name,
-                    "name": copy.get("name", suite.name),
-                    "name_hi": copy.get("name_hi", suite.name),
-                    "badge": copy.get("badge", suite.validation_status),
-                    "summary": copy.get("summary", suite.description),
-                    "summary_hi": copy.get("summary_hi", suite.description),
+                    "name": name,
+                    "name_hi": name_hi,
+                    "badge": badge,
+                    "summary": summary,
+                    "summary_hi": summary_hi,
                     "recommended": suite.name == "india-pilot",
+                    "mine": mine,
+                    "judged": judged,
                     "tasks": len(suite.tasks),
                     "languages": languages,
                     "validation_status": suite.validation_status,
@@ -473,9 +639,25 @@ class DesktopSession:
             raise ValueError(f"Tries must be between 1 and {MAX_REPEATS}.")
         if not math.isfinite(max_usd) or max_usd < 0:
             raise ValueError("The spending cap must be zero or more.")
-        prices = self._prices()
+        priced_specs = list(specs)
+        judge_hint = self._judge_for(loaded)
+        if judge_hint:
+            priced_specs.append(judge_hint)
+        prices = self._prices_for(priced_specs)
         built = [self._runner(spec, prices) for spec in specs]
         check = preflight(loaded.tasks, built, float(max_usd), repeats=repeats)
+        judge_spec, judge_cost, judge_problems, judge_warnings = self._judge_check(
+            loaded, len(built), repeats, prices
+        )
+        all_problems = list(check.problems) + judge_problems
+        if judge_spec and judge_cost is None and not judge_problems:
+            all_problems.append(
+                f"no price for judge {judge_spec}; grading cost is unknown, so the run is refused"
+            )
+        total_worst = check.worst_case_usd + (judge_cost or 0.0)
+        if judge_cost is not None and check.ok and total_worst > float(max_usd):
+            all_problems.append("worst-case cost including the marking judge exceeds the cap")
+        ok = check.ok and len(all_problems) == len(check.problems) and judge_cost is not None
         rate = settings.usd_to_inr
         rows = []
         for runner in built:
@@ -496,19 +678,28 @@ class DesktopSession:
                 }
             )
         return {
-            "ok": check.ok,
-            "problems": check.problems,
-            "plain_problems": [_plain_problem(item) for item in check.problems],
-            "warnings": check.warnings,
-            "worst_case_usd": check.worst_case_usd,
-            "worst_case_inr": check.worst_case_usd * rate,
+            "ok": ok,
+            "problems": all_problems,
+            "plain_problems": [_plain_problem(item) for item in all_problems],
+            "warnings": list(check.warnings) + judge_warnings,
+            "worst_case_usd": total_worst,
+            "worst_case_inr": total_worst * rate,
+            "judge": (
+                {
+                    "spec": judge_spec,
+                    "worst_case_usd": judge_cost,
+                    "worst_case_inr": None if judge_cost is None else judge_cost * rate,
+                }
+                if judge_spec
+                else None
+            ),
             "cap_usd": float(max_usd),
             "cap_inr": float(max_usd) * rate,
             "usd_to_inr": rate,
             "fx_note": "Configured rate, not a live bank rate.",
             "attempts": len(loaded.tasks) * len(built) * repeats,
             "repeats": repeats,
-            "paid": check.worst_case_usd > 0,
+            "paid": total_worst > 0,
             "runners": rows,
             "honesty": HONESTY,
             "pack": loaded.name,
@@ -543,8 +734,13 @@ class DesktopSession:
             )
         settings = self._fx(usd_to_inr)
         loaded = self._load_named(suite)
-        prices = self._prices()
+        judge_info = estimate.get("judge") or {}
+        judge_spec = judge_info.get("spec")
+        judge_usd = judge_info.get("worst_case_usd") or 0.0
+        priced_specs = list(runners) + ([judge_spec] if judge_spec else [])
+        prices = self._prices_for(priced_specs)
         built = [self._runner(spec, prices) for spec in runners]
+        judge_fn = make_judge(judge_spec, env=self.env) if judge_spec else None
         titles = {**TITLES, **DEMO_TITLES}
         total = estimate["attempts"]
         done = {"n": 0}
@@ -606,7 +802,8 @@ class DesktopSession:
                         settings=settings,
                         seed=int(seed),
                         repeats=repeats,
-                        max_usd=float(max_usd),
+                        max_usd=max(0.0, float(max_usd) - float(judge_usd)),
+                        judge=judge_fn,
                         on_result=on_result,
                         on_start=on_start,
                         on_attempt=on_attempt,
@@ -634,6 +831,171 @@ class DesktopSession:
                 "card_path": card["path"],
                 "dashboard_url": self.dashboard_url(summary.run_id),
                 "honesty": HONESTY,
+            }
+        finally:
+            with self._lock:
+                self._busy = False
+
+    def _history_paths(self, raw: Any) -> list[Path]:
+        paths: list[Path] = []
+        for item in raw if isinstance(raw, list) else []:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            text = item.strip()
+            if text.startswith("~/"):
+                text = str(Path(self.env.get("HOME", "")) / text[2:])
+            paths.append(Path(text))
+        if not paths:
+            raise ValueError("Choose at least one export file first.")
+        if len(paths) > 8:
+            raise ValueError("Choose at most 8 files at a time.")
+        for path in paths:
+            if not path.exists():
+                raise ValueError(f"That file is not on this computer: {path}")
+        return paths
+
+    def _history_pairs(self, raw: Any):
+        paths = self._history_paths(raw)
+        try:
+            history = load_history(paths)
+        except Exception as exc:  # noqa: BLE001 - shown to the person picking files
+            raise ValueError(f"That export could not be read. {exc}") from exc
+        return paths, history, history.pairs
+
+    def history_preview(self, paths: Any) -> dict[str, Any]:
+        """Counts only, like `km history`: no prompt text leaves this call."""
+        _paths, history, pairs = self._history_pairs(paths)
+        return {
+            "conversations": len(history.conversations),
+            "prompts": len(pairs),
+            "by_source": history.by_source(),
+        }
+
+    def micro_eval_estimate(
+        self, *, paths: Any, judge: str, limit: int | None = None
+    ) -> dict[str, Any]:
+        _paths, _history, pairs = self._history_pairs(paths)
+        judge = (judge or "").strip()
+        if not judge:
+            raise ValueError("Pick the AI that should mark your old answers.")
+        prices = self._prices_for([judge])
+        problems = judge_problems(judge, self.env)
+        cache = VerdictCache(self.settings.runs_dir / "judge-cache.jsonl")
+        worst = (
+            None
+            if problems
+            else estimate_judge_cost_usd(pairs, judge, prices, limit=limit, cache=cache)
+        )
+        selection = select_pairs(pairs, limit)
+        rate = self.settings.usd_to_inr
+        return {
+            "prompts": len(pairs),
+            "selected": len(selection.pairs),
+            "duplicates": selection.duplicates,
+            "oversized": selection.oversized,
+            "judge": judge,
+            "problems": problems,
+            "plain_problems": [_plain_problem(item) for item in problems],
+            "worst_case_usd": worst,
+            "worst_case_inr": None if worst is None else worst * rate,
+            "paid": bool(worst),
+            "usd_to_inr": rate,
+        }
+
+    def micro_eval(
+        self,
+        *,
+        paths: Any,
+        judge: str,
+        name: str = "",
+        max_usd: float = 1.0,
+        confirmed: bool = False,
+        limit: int | None = None,
+        min_confidence: float = 0.7,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        if confirmed is not True:
+            raise ValueError("Confirm the cost first. Nothing was called.")
+        estimate = self.micro_eval_estimate(paths=paths, judge=judge, limit=limit)
+        worst = estimate["worst_case_usd"]
+        if worst is None:
+            plain = " ".join(estimate["plain_problems"])
+            raise ValueError(plain or "The marking AI has no checked price, so nothing was called.")
+        if not math.isfinite(max_usd) or max_usd < 0 or worst > max_usd:
+            raise ValueError(
+                "The worst-case marking cost is above your spending cap. Nothing was called."
+            )
+        judge_spec = estimate["judge"]
+        return self._micro_eval_with(
+            paths=paths,
+            judge_spec=judge_spec,
+            judge_fn=make_judge(judge_spec, env=self.env),
+            name=name,
+            limit=limit,
+            min_confidence=min_confidence,
+            on_event=on_event,
+        )
+
+    def _micro_eval_with(
+        self, *, paths, judge_spec, judge_fn, name="", limit=None, min_confidence=0.7, on_event=None
+    ) -> dict[str, Any]:
+        _paths, _history, pairs = self._history_pairs(paths)
+        if not pairs:
+            raise ValueError("No questions with answers were found in that export.")
+        with self._lock:
+            if self._busy:
+                raise ValueError("A check is already running.")
+            self._busy = True
+        try:
+            cache = VerdictCache(self.settings.runs_dir / "judge-cache.jsonl")
+
+            def progress(done: int, total: int, _pair: Any) -> None:
+                if on_event:
+                    on_event({"type": "mining", "done": done, "total": total})
+
+            mined = mine_failures(
+                pairs,
+                judge_fn,
+                judge_spec=judge_spec,
+                min_confidence=min_confidence,
+                limit=limit,
+                on_progress=progress,
+                cache=cache,
+            )
+            counts = {
+                "checked": mined.checked,
+                "correct": mined.correct,
+                "unclear": mined.unclear,
+                "below_threshold": mined.below_threshold,
+                "errors": mined.errors,
+                "cache_hits": mined.cache_hits,
+                "duplicates": mined.duplicates,
+                "oversized": mined.oversized,
+            }
+            if not mined.failures:
+                return {"built": False, **counts}
+            directory = self.my_tests_dir()
+            directory.mkdir(parents=True, exist_ok=True)
+            slug = "-".join(
+                part for part in re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).split("-") if part
+            )
+            base = f"my-{slug}" if slug else "my-micro-eval"
+            suite_id = base
+            if (directory / f"{suite_id}.yaml").exists():
+                suite_id = f"{base}-{secrets.token_hex(3)}"
+            suite, _evidence = write_micro_eval(
+                mined.failures,
+                directory / f"{suite_id}.yaml",
+                name=suite_id,
+                version="1",
+                judge_spec=judge_spec,
+            )
+            return {
+                "built": True,
+                "suite_id": suite.name,
+                "tasks": len(suite.tasks),
+                "judge": judge_spec,
+                **counts,
             }
         finally:
             with self._lock:
@@ -1077,6 +1439,29 @@ def dispatch(
                 usd_to_inr=params.get("usd_to_inr"),
                 on_event=on_event,
             )
+        elif method == "history_preview":
+            result = session.history_preview(params.get("paths"))
+        elif method == "micro_eval_estimate":
+            result = session.micro_eval_estimate(
+                paths=params.get("paths"),
+                judge=str(params.get("judge") or ""),
+                limit=params.get("limit"),
+            )
+        elif method == "micro_eval":
+
+            def on_mining(event: dict[str, Any]) -> None:
+                emit({"id": ident, "event": "progress", "result": event})
+
+            result = session.micro_eval(
+                paths=params.get("paths"),
+                judge=str(params.get("judge") or ""),
+                name=str(params.get("name") or ""),
+                max_usd=float(params.get("max_usd") if params.get("max_usd") is not None else 1),
+                confirmed=params.get("confirmed") is True,
+                limit=params.get("limit"),
+                min_confidence=float(params.get("min_confidence") or 0.7),
+                on_event=on_mining,
+            )
         elif method == "cancel":
             result = session.cancel()
         elif method == "report":
@@ -1125,7 +1510,7 @@ def serve_stdio(session: DesktopSession | None = None) -> None:
         if not isinstance(request, dict):
             emit({"id": None, "ok": False, "error": "The message could not be read."})
             continue
-        if request.get("method") == "run":
+        if request.get("method") in {"run", "micro_eval", "micro_eval_estimate", "history_preview"}:
             threading.Thread(
                 target=dispatch, args=(session, request, emit), name="km-run", daemon=True
             ).start()

@@ -91,6 +91,50 @@ def bundled_prices() -> PriceTable:
     return PriceTable.parse(yaml.safe_load(text), "bundled prices.yaml")
 
 
+def openrouter_prices(models: Any) -> PriceTable:
+    """Prices from OpenRouter's public model list (`GET /api/v1/models`).
+
+    `models` is the parsed JSON body (or its `data` list). Per-token prices
+    become USD per million tokens, keyed `openrouter/<model id>`.
+    """
+    rows = models.get("data") if isinstance(models, dict) else models
+    prices: dict[str, Price] = {}
+    if not isinstance(rows, list):
+        return PriceTable(prices)
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            continue
+        pricing = row.get("pricing") or {}
+        try:
+            prompt = float(pricing.get("prompt"))
+            completion = float(pricing.get("completion"))
+        except (TypeError, ValueError):
+            continue
+        if prompt < 0 or completion < 0:
+            continue
+        entry: dict[str, Any] = {
+            "input": prompt * MTOK,
+            "output": completion * MTOK,
+            "source": "https://openrouter.ai/api/v1/models (live)",
+        }
+        try:
+            cache_read = pricing.get("input_cache_read")
+            if cache_read is not None:
+                entry["cache_read"] = float(cache_read) * MTOK
+        except (TypeError, ValueError):
+            pass
+        for override in pricing.get("overrides") or []:
+            try:
+                entry["long_context_threshold"] = int(override["min_prompt_tokens"])
+                entry["long_input"] = float(override["prompt"]) * MTOK
+                entry["long_output"] = float(override["completion"]) * MTOK
+            except (KeyError, TypeError, ValueError):
+                continue
+            break
+        prices[f"openrouter/{row['id']}"] = Price.model_validate(entry)
+    return PriceTable(prices)
+
+
 def load_prices(override: Path | None = None) -> PriceTable:
     """Bundled prices, with entries from the override file (if it exists) taking precedence."""
     table = bundled_prices()
