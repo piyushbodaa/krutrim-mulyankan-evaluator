@@ -366,6 +366,7 @@ pub fn openrouter_models(base: &str) -> Result<Vec<Value>, String> {
             "created": model["created"],
             "free": id.ends_with(":free") || (input == Some(0.0) && output == Some(0.0)),
             "inputs": model.pointer("/architecture/input_modalities").cloned().unwrap_or(Value::Null),
+            "outputs": model.pointer("/architecture/output_modalities").cloned().unwrap_or(Value::Null),
         }));
     }
     Ok(models)

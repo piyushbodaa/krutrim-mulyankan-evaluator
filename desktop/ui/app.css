@@ -357,3 +357,31 @@ body.wide .foot{display:none}
 .mine-get{margin:0 0 12px;padding-left:20px;display:grid;gap:4px}
 #mine-files li{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
 #mine-files span{overflow-wrap:anywhere}
+
+/* Every AI on OpenRouter, in the test picker */
+.sub-title{margin:14px 0 8px;font-size:14px;font-weight:600;color:var(--muted)}
+.or-connect{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px;margin:0 0 12px;padding:14px 16px;border:1px solid var(--ink);border-radius:var(--radius);background:var(--surface)}
+.or-connect p{margin:0;flex:1 1 280px}
+.or-connect .secondary{min-height:40px;padding:6px 16px}
+.or-tools{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:18px 0 8px}
+.or-tools input[type=search]{flex:1 1 280px;min-width:0}
+.or-tools select{width:auto;flex:0 0 auto}
+.or-free{display:inline-flex;align-items:center;gap:6px;font-size:14px;white-space:nowrap}
+.or-free input{width:18px;height:18px;min-height:0;accent-color:var(--ink)}
+.or-list{list-style:none;margin:0;padding:6px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);display:grid;gap:2px}
+.or-row{display:flex;align-items:center;gap:12px;padding:9px 10px;border-radius:10px;cursor:pointer;min-width:0}
+.or-row:hover{background:var(--soft)}
+.or-row.on{background:var(--paper);box-shadow:inset 0 0 0 1px var(--ink)}
+.or-row input{width:18px;height:18px;min-height:0;flex:0 0 auto;accent-color:var(--ink)}
+.or-text{display:grid;min-width:0;flex:1}
+.or-name{font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.or-meta{font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.or-price{font-size:13px;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
+.or-empty{padding:10px}
+
+/* More right answers, and why a reply was marked wrong */
+.also{display:grid;gap:6px;justify-items:start;margin-top:4px}
+.also-row{display:flex;gap:6px;width:100%}
+.also-row input{flex:1 1 auto;min-width:0}
+.also .link{font-weight:400}
+.why-wrong{margin:6px 0 0;color:var(--muted)}

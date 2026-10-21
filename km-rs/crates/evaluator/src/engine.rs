@@ -226,6 +226,73 @@ pub struct RunSummary {
     pub results: Vec<ResultRecord>,
 }
 
+/// One attempt per (repeat, task, runner), in the order results are stored.
+struct Planned<'a> {
+    repeat_index: i64,
+    task: &'a Task,
+    prompt: &'a str,
+    runner: &'a Runner,
+    runner_index: usize,
+}
+
+/// What one attempt produced: output, latency, run status, grade.
+type Outcome = (RunOutput, Option<f64>, &'static str, Option<Grade>);
+
+/// Ask the runner and grade the reply. Runs on a worker thread when the run
+/// is parallel, so it touches nothing shared but its arguments.
+fn execute(
+    runner: &Runner,
+    task: &Task,
+    prompt: &str,
+    ctx: &RunContext,
+    fixture_base: &Path,
+    judge: Option<&JudgeFn>,
+) -> Outcome {
+    let (out, latency) = attempt(runner, task, prompt, ctx);
+    if ctx.workdir != fixture_base {
+        let _ = std::fs::remove_dir_all(&ctx.workdir);
+    }
+    let run_status = if out.error.is_some() { "error" } else { "ok" };
+    let grade = if run_status == "ok" {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_grader(task, &out.output, fixture_base, judge)
+        })) {
+            Ok(g) => Some(g),
+            Err(_) => Some(Grade::error(
+                task.grader.kind(),
+                "Panic: grader panicked".into(),
+            )),
+        }
+    } else {
+        None
+    };
+    (out, latency, run_status, grade)
+}
+
+fn skipped(reason: String) -> Outcome {
+    let out = RunOutput {
+        error: Some(reason),
+        usage: Usage {
+            cost_usd: Some(0.0),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    (out, None, "skipped", None)
+}
+
+/// How many of one runner's answers may be in flight at once. Free
+/// OpenRouter models share tight rate limits; local harnesses and recorded
+/// app observations run one at a time.
+fn runner_parallelism(runner: &Runner) -> usize {
+    match runner.model_state() {
+        Some(m) if m.model.ends_with(":free") => 2,
+        Some(_) => 4,
+        None if runner.kind == crate::runners::RunnerKind::Fake => usize::MAX,
+        None => 1,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_suite(
     suite: &Suite,
@@ -238,6 +305,31 @@ pub fn run_suite(
     task_ids: Option<&[String]>,
     callbacks: &RunCallbacks,
     cancel: Option<Arc<AtomicBool>>,
+) -> Result<RunSummary, PreflightError> {
+    run_suite_with(
+        suite, runners, store, settings, seed, repeats, max_usd, task_ids, callbacks, cancel, 1,
+    )
+}
+
+/// `run_suite`, asking up to `concurrency` questions at once. Results are
+/// still stored in (repeat, task, runner) order, so a parallel run exports
+/// the same file a one-at-a-time run would. The spending cap is checked
+/// before each call against what is spent plus every call still in flight
+/// at its worst case, so parallel calls can never overshoot it together.
+/// `concurrency` 1 is exactly the one-at-a-time run.
+#[allow(clippy::too_many_arguments)]
+pub fn run_suite_with(
+    suite: &Suite,
+    runners: &[Runner],
+    store: &Store,
+    settings: &Settings,
+    seed: i64,
+    repeats: i64,
+    max_usd: Option<f64>,
+    task_ids: Option<&[String]>,
+    callbacks: &RunCallbacks,
+    cancel: Option<Arc<AtomicBool>>,
+    concurrency: usize,
 ) -> Result<RunSummary, PreflightError> {
     let tasks = suite
         .select(task_ids)
@@ -325,133 +417,267 @@ pub fn run_suite(
     if let Some(cb) = &callbacks.on_start {
         cb(&run_id);
     }
+    let prompts: Vec<String> = tasks.iter().map(|t| t.render_prompt()).collect();
+    let mut planned: Vec<Planned> = Vec::new();
     for repeat_index in 0..repeats {
-        for task in &tasks {
-            let prompt = task.render_prompt();
-            for runner in runners {
-                let task_seed = derive_seed(seed, &task.id, repeat_index);
-                let est = runner.estimate_cost_usd(task, &prompt);
-                let cancelled = cancel
-                    .as_ref()
-                    .map(|c| c.load(Ordering::SeqCst))
-                    .unwrap_or(false);
-                let skip: Option<String> = if cancelled {
-                    status = "cancelled".into();
-                    Some("Cancelled before this attempt; no adapter call made".into())
-                } else if task
-                    .budget_usd
-                    .zip(est)
-                    .map(|(b, e)| e > b)
-                    .unwrap_or(false)
-                {
-                    Some(format!(
-                        "estimate ${:.4} exceeds task budget ${:.4}",
-                        est.unwrap_or(0.0),
-                        task.budget_usd.unwrap_or(0.0)
-                    ))
-                } else if reserved + est.unwrap_or(0.0) > cap {
-                    status = "budget_exceeded".into();
-                    Some(format!(
-                        "run budget cap ${cap:.2} reached (spent ${spent:.4})"
-                    ))
-                } else {
-                    None
-                };
+        for (task, prompt) in tasks.iter().zip(&prompts) {
+            for (runner_index, runner) in runners.iter().enumerate() {
+                planned.push(Planned {
+                    repeat_index,
+                    task,
+                    prompt,
+                    runner,
+                    runner_index,
+                });
+            }
+        }
+    }
+    let cancelled = || {
+        cancel
+            .as_ref()
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    };
+    // Why an attempt must not call anything, checked just before it would:
+    // a cancel, the task's own budget, or the run cap with every call still
+    // in flight counted at its worst case.
+    let skip_reason = |task: &Task,
+                       est: Option<f64>,
+                       committed: f64,
+                       spent: f64,
+                       status: &mut String|
+     -> Option<String> {
+        if cancelled() {
+            *status = "cancelled".into();
+            Some("Cancelled before this attempt; no adapter call made".into())
+        } else if task
+            .budget_usd
+            .zip(est)
+            .map(|(b, e)| e > b)
+            .unwrap_or(false)
+        {
+            Some(format!(
+                "estimate ${:.4} exceeds task budget ${:.4}",
+                est.unwrap_or(0.0),
+                task.budget_usd.unwrap_or(0.0)
+            ))
+        } else if committed + est.unwrap_or(0.0) > cap {
+            *status = "budget_exceeded".into();
+            Some(format!(
+                "run budget cap ${cap:.2} reached (spent ${spent:.4})"
+            ))
+        } else {
+            None
+        }
+    };
+    let context = |p: &Planned| RunContext {
+        workdir: make_workdir(&fixture_base, p.task),
+        seed: derive_seed(seed, &p.task.id, p.repeat_index),
+        timeout_s: p.task.timeout_s,
+        cancel: cancel.clone(),
+    };
+    // Account for one finished attempt and build its record. Storing it is
+    // left to the caller, which keeps the fixed order.
+    let finish = |p: &Planned,
+                  est: Option<f64>,
+                  outcome: Outcome,
+                  spent: &mut f64,
+                  reserved: &mut f64,
+                  uncertain: &mut bool,
+                  status: &mut String|
+     -> ResultRecord {
+        let (mut out, latency, run_status, grade) = outcome;
+        if out.usage.cost_usd.is_none()
+            && est == Some(0.0)
+            && p.runner.kind != crate::runners::RunnerKind::Harness
+        {
+            out.usage.cost_usd = Some(0.0);
+        }
+        *spent += out.usage.cost_usd.unwrap_or(0.0);
+        *reserved += out.usage.cost_usd.or(est).unwrap_or(0.0);
+        *uncertain |= out.usage.cost_usd.is_none();
+        if *reserved > cap {
+            *status = "budget_exceeded".into();
+        }
+        let mut record = make_record(
+            &run_id,
+            p.task,
+            p.runner,
+            derive_seed(seed, &p.task.id, p.repeat_index),
+            run_status,
+            &out,
+            latency,
+            grade.as_ref(),
+            settings,
+        );
+        record.repeat_index = p.repeat_index;
+        let artifact = save_artifact(
+            &run_dir,
+            p.task,
+            p.runner,
+            p.prompt,
+            &out,
+            &record,
+            grade.as_ref(),
+        );
+        record.artifact_path = Some(artifact.to_string_lossy().into_owned());
+        record
+    };
 
-                let (mut out, latency, run_status, grade);
-                if let Some(reason) = skip {
-                    out = RunOutput {
-                        error: Some(reason),
-                        usage: Usage {
-                            cost_usd: Some(0.0),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    };
-                    latency = None;
-                    run_status = "skipped";
-                    grade = None;
-                } else {
+    if concurrency <= 1 {
+        for p in &planned {
+            let est = p.runner.estimate_cost_usd(p.task, p.prompt);
+            let outcome = match skip_reason(p.task, est, reserved, spent, &mut status) {
+                Some(reason) => skipped(reason),
+                None => {
                     if let Some(cb) = &callbacks.on_attempt {
-                        cb(&task.id, &runner.name);
+                        cb(&p.task.id, &p.runner.name);
                     }
-                    let ctx = RunContext {
-                        workdir: make_workdir(&fixture_base, task),
-                        seed: task_seed,
-                        timeout_s: task.timeout_s,
-                        cancel: cancel.clone(),
-                    };
-                    let (o, lat) = attempt(runner, task, &prompt, &ctx);
-                    if ctx.workdir != fixture_base {
-                        let _ = std::fs::remove_dir_all(&ctx.workdir);
-                    }
-                    out = o;
-                    latency = lat;
-                    if cancel
-                        .as_ref()
-                        .map(|c| c.load(Ordering::SeqCst))
-                        .unwrap_or(false)
-                    {
+                    let outcome = execute(
+                        p.runner,
+                        p.task,
+                        p.prompt,
+                        &context(p),
+                        &fixture_base,
+                        callbacks.judge,
+                    );
+                    if cancelled() {
                         status = "cancelled".into();
                     }
-                    run_status = if out.error.is_some() { "error" } else { "ok" };
-                    grade = if run_status == "ok" {
-                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            run_grader(task, &out.output, &fixture_base, callbacks.judge)
-                        })) {
-                            Ok(g) => Some(g),
-                            Err(_) => Some(Grade::error(
-                                task.grader.kind(),
-                                "Panic: grader panicked".into(),
-                            )),
+                    outcome
+                }
+            };
+            let record = finish(
+                p,
+                est,
+                outcome,
+                &mut spent,
+                &mut reserved,
+                &mut uncertain,
+                &mut status,
+            );
+            let _ = store.add_result(&record);
+            if let Some(cb) = &callbacks.on_result {
+                cb(&record);
+            }
+            results.push(record);
+            // On cancel, remaining attempts are still recorded as skipped
+            // by the check at the top of the loop (like Python).
+        }
+    } else {
+        // Workers only ask and grade. Callbacks, accounting and storage stay
+        // on this thread; finished records wait in `done` until every earlier
+        // attempt is stored, so the export order never depends on timing.
+        let total = planned.len();
+        let mut launched = vec![false; total];
+        let mut estimates: Vec<Option<f64>> = vec![None; total];
+        let mut done: Vec<Option<ResultRecord>> = (0..total).map(|_| None).collect();
+        let mut busy_per_runner = vec![0usize; runners.len()];
+        let (mut busy, mut busy_usd) = (0usize, 0.0f64);
+        let (mut cursor, mut stored) = (0usize, 0usize);
+        std::thread::scope(|scope| {
+            let (tx, rx) = std::sync::mpsc::channel::<(usize, Outcome)>();
+            loop {
+                let stop = cancelled();
+                let mut index = cursor;
+                while index < total && (stop || busy < concurrency) {
+                    let p = &planned[index];
+                    let full = busy_per_runner[p.runner_index] >= runner_parallelism(p.runner);
+                    if launched[index] || (!stop && full) {
+                        index += 1;
+                        continue;
+                    }
+                    launched[index] = true;
+                    let est = p.runner.estimate_cost_usd(p.task, p.prompt);
+                    estimates[index] = est;
+                    match skip_reason(p.task, est, reserved + busy_usd, spent, &mut status) {
+                        Some(reason) => {
+                            let record = finish(
+                                p,
+                                est,
+                                skipped(reason),
+                                &mut spent,
+                                &mut reserved,
+                                &mut uncertain,
+                                &mut status,
+                            );
+                            if let Some(cb) = &callbacks.on_result {
+                                cb(&record);
+                            }
+                            done[index] = Some(record);
                         }
-                    } else {
-                        None
+                        None => {
+                            if let Some(cb) = &callbacks.on_attempt {
+                                cb(&p.task.id, &p.runner.name);
+                            }
+                            busy += 1;
+                            busy_per_runner[p.runner_index] += 1;
+                            busy_usd += est.unwrap_or(0.0);
+                            let ctx = context(p);
+                            let (tx, base, judge) =
+                                (tx.clone(), fixture_base.as_path(), callbacks.judge);
+                            let (runner, task, prompt) = (p.runner, p.task, p.prompt);
+                            scope.spawn(move || {
+                                let outcome =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        execute(runner, task, prompt, &ctx, base, judge)
+                                    }))
+                                    .unwrap_or_else(|_| {
+                                        (
+                                            RunOutput::error("Panic: attempt panicked".into()),
+                                            None,
+                                            "error",
+                                            None,
+                                        )
+                                    });
+                                let _ = tx.send((index, outcome));
+                            });
+                        }
+                    }
+                    index += 1;
+                }
+                while cursor < total && launched[cursor] {
+                    cursor += 1;
+                }
+                while stored < total {
+                    let Some(record) = done[stored].take() else {
+                        break;
                     };
+                    let _ = store.add_result(&record);
+                    results.push(record);
+                    stored += 1;
                 }
-                if out.usage.cost_usd.is_none()
-                    && est == Some(0.0)
-                    && runner.kind != crate::runners::RunnerKind::Harness
-                {
-                    out.usage.cost_usd = Some(0.0);
+                if stored == total {
+                    break;
                 }
-                spent += out.usage.cost_usd.unwrap_or(0.0);
-                reserved += out.usage.cost_usd.or(est).unwrap_or(0.0);
-                uncertain |= out.usage.cost_usd.is_none();
-                if reserved > cap {
-                    status = "budget_exceeded".into();
+                if busy == 0 {
+                    continue;
                 }
-                let mut record = make_record(
-                    &run_id,
-                    task,
-                    runner,
-                    task_seed,
-                    run_status,
-                    &out,
-                    latency,
-                    grade.as_ref(),
-                    settings,
+                let Ok((index, outcome)) = rx.recv() else {
+                    break;
+                };
+                let p = &planned[index];
+                busy -= 1;
+                busy_per_runner[p.runner_index] -= 1;
+                busy_usd -= estimates[index].unwrap_or(0.0);
+                if cancelled() {
+                    status = "cancelled".into();
+                }
+                let record = finish(
+                    p,
+                    estimates[index],
+                    outcome,
+                    &mut spent,
+                    &mut reserved,
+                    &mut uncertain,
+                    &mut status,
                 );
-                record.repeat_index = repeat_index;
-                let artifact = save_artifact(
-                    &run_dir,
-                    task,
-                    runner,
-                    &prompt,
-                    &out,
-                    &record,
-                    grade.as_ref(),
-                );
-                record.artifact_path = Some(artifact.to_string_lossy().into_owned());
-                let _ = store.add_result(&record);
                 if let Some(cb) = &callbacks.on_result {
                     cb(&record);
                 }
-                results.push(record);
-                // On cancel, remaining attempts are still recorded as skipped
-                // by the check at the top of the loop (like Python).
+                done[index] = Some(record);
             }
-        }
+        });
     }
     let finished_at = now_iso();
     let _ = store.finish_run(&run_id, &status, &finished_at, spent, reserved, uncertain);

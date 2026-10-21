@@ -2,6 +2,7 @@
 //! engine. Behaviour mirrors the Python `kritrim_mulyankan` package for
 //! free/local runs; see the Rust PR notes for what is not ported yet.
 
+pub mod answer;
 pub mod claude_draft;
 pub mod engine;
 pub mod export;
@@ -27,7 +28,9 @@ pub mod tokens;
 pub mod verdicts;
 pub mod workbench;
 
-pub use engine::{preflight, run_suite, Preflight, PreflightError, RunCallbacks, RunSummary};
+pub use engine::{
+    preflight, run_suite, run_suite_with, Preflight, PreflightError, RunCallbacks, RunSummary,
+};
 pub use observations::{AppObservation, AppObservationRunner};
 pub use pricing::{load_prices, PriceTable};
 pub use report::{build_report, to_html, to_markdown, Report, RunnerRow};
@@ -37,7 +40,7 @@ pub use runners::{
 };
 pub use settings::{effective_suites_dir, Settings};
 pub use store::{ResultRecord, RunRecord, Store};
-pub use suite::{discover_suites, load_suite, resolve_suite, GraderSpec, Suite, Task};
+pub use suite::{discover_suites, load_suite, resolve_suite, AnswerCheck, GraderSpec, Suite, Task};
 pub use verdicts::Verdict;
 
 /// Plain-language explanation for one finished attempt (mirrors

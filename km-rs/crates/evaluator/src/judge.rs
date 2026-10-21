@@ -4,7 +4,8 @@
 use crate::providers::{credentials_problem, make_adapter, provider_config};
 use std::collections::BTreeMap;
 
-pub type JudgeFn = dyn Fn(&str) -> Result<String, String>;
+/// Shared by the worker threads of a parallel run, so it must be Sync.
+pub type JudgeFn = dyn Fn(&str) -> Result<String, String> + Send + Sync;
 
 pub const DEFAULT_JUDGE_MAX_TOKENS: i64 = 1024;
 pub const DEFAULT_JUDGE_TIMEOUT_S: f64 = 120.0;

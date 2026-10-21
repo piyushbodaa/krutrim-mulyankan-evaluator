@@ -247,6 +247,7 @@ impl Runner {
             RunnerInner::Fake(FakeKind::Echo) => Ok(free_output(prompt, prompt)),
             RunnerInner::Fake(FakeKind::Oracle) => {
                 let answer = match &task.grader {
+                    GraderSpec::Answer { expected, .. } => expected[0].clone(),
                     GraderSpec::Exact { expected, .. } => expected[0].clone(),
                     GraderSpec::Json { expected } => crate::pypy::py_json_dumps(expected),
                     GraderSpec::Numeric { expected_raw, .. } => expected_raw.clone(),
@@ -405,15 +406,24 @@ fn run_model(
     let cfg = provider_config(&m.provider).unwrap();
     let max_tokens = model_max_tokens(m, task);
     let (result, attempts) = call_with_retries(m.options.retries, &*m.sleep, || {
-        adapter.complete(
-            &m.model,
-            prompt,
-            max_tokens,
-            ctx.timeout_s,
-            ctx.seed,
-            m.options.effort.as_deref(),
-            m.options.temperature,
-        )
+        let call = || {
+            adapter.complete(
+                &m.model,
+                prompt,
+                max_tokens,
+                ctx.timeout_s,
+                ctx.seed,
+                m.options.effort.as_deref(),
+                m.options.temperature,
+            )
+        };
+        // Without explicit retries, still wait out rate limits: they were
+        // never billed, so the cost stays known.
+        if m.options.retries == 0 {
+            crate::providers::retry_rate_limits(&*m.sleep, call)
+        } else {
+            call()
+        }
     })
     .map_err(|e: ApiError| e.to_string())?;
     let retries = attempts;

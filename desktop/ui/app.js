@@ -32,6 +32,12 @@ const state = {
   modalProvider: null,
   screen: "home",
   mine: {files: [], preview: null, estimate: null, agreed: false, building: false, builtSuite: null},
+  // OpenRouter's live list: every AI one key opens.
+  live: {models: [], loaded: false, error: null},
+  orQuery: "",
+  orFree: false,
+  orSort: "new",
+  orShown: 40,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -133,8 +139,23 @@ function modelInfo(model) {
 }
 
 function prettyName(spec, fallback) {
+  const live = liveModel(spec);
+  if (live) return splitModelName(live).short;
   const model = (state.catalog?.models || []).find((m) => m.spec === spec);
   return model ? modelInfo(model).label : (fallback || spec);
+}
+
+/* "Anthropic: Claude Sonnet 5.5" -> maker "Anthropic", short "Claude Sonnet 5.5". */
+function splitModelName(m) {
+  const name = m.name || m.id;
+  const at = name.indexOf(": ");
+  return at > 0 ? {maker: name.slice(0, at), short: name.slice(at + 2)} : {maker: m.id.split("/")[0], short: name};
+}
+
+function liveModel(spec) {
+  if (!spec || !spec.startsWith("model:openrouter/")) return null;
+  const id = spec.slice("model:openrouter/".length);
+  return state.live.models.find((m) => m.id === id) || null;
 }
 
 function labelOf(item, key) {
@@ -195,7 +216,7 @@ async function renderHome() {
     const ais = count === 1 ? prettyName(run.runners[0]) : `${count} ${kmLang === "hi" ? "एआई" : "AIs"}`;
     const spent = run.spent_usd > 0 ? rupees(run.spent_usd) : t("ai.free");
     list.append(el("li", {},
-      el("div", {}, el("strong", {text: run.suite_label || run.suite}), el("span", {class: "muted small", text: [date, ais, spent].filter(Boolean).join(" · ")})),
+      el("div", {}, el("strong", {text: (kmLang === "hi" && run.suite_label_hi) || run.suite_label || run.suite}), el("span", {class: "muted small", text: [date, ais, spent].filter(Boolean).join(" · ")})),
       el("button", {class: "secondary", type: "button", text: t("home.open"), onclick: () => showResults(run.id)})));
   }
 }
@@ -271,8 +292,11 @@ async function deleteTest(id) {
 /* ---------- write your own test ---------- */
 
 function blankQuestion() {
-  return {question: "", answer: "", check: "includes"};
+  return {question: "", answer: "", also: [], check: "includes"};
 }
+
+// Besides the right answer, up to four more replies that also count.
+const MAX_ALSO = 4;
 
 function newTest() {
   state.draft = {id: null, name: "", questions: [blankQuestion(), blankQuestion(), blankQuestion()]};
@@ -328,6 +352,24 @@ function renderEditor() {
     const answer = el("input", {id: qid + "-a", type: "text", maxlength: 300, autocomplete: "off", placeholder: t("b.answerPh"),
       oninput: (event) => { item.answer = event.target.value; }});
     answer.value = item.answer;
+    item.also = item.also || [];
+    const also = el("div", {class: "also"});
+    item.also.forEach((value, at) => {
+      const other = el("input", {type: "text", maxlength: 300, autocomplete: "off", placeholder: t("b.alsoPh"),
+        "aria-label": t("b.also"), oninput: (event) => { item.also[at] = event.target.value; }});
+      other.value = value;
+      also.append(el("div", {class: "also-row"}, other,
+        el("button", {class: "icon-btn", type: "button", "aria-label": t("b.remove"), title: t("b.remove"), text: "×",
+          onclick: () => { item.also.splice(at, 1); renderEditor(); }})));
+    });
+    if (item.also.length < MAX_ALSO) {
+      also.append(el("button", {class: "link", type: "button", text: "+ " + t("b.also"),
+        onclick: () => {
+          item.also.push("");
+          renderEditor();
+          $("question-editor").children[index]?.querySelector(".also-row:last-of-type input")?.focus();
+        }}));
+    }
     const help = el("p", {class: "muted small check-help", text: t(checks.find((c) => c[0] === item.check)?.[2] || "b.includesHelp")});
     const options = el("div", {class: "seg-choice", role: "radiogroup", "aria-label": t("b.check")});
     for (const [value, labelKey, helpKey] of checks) {
@@ -345,7 +387,7 @@ function renderEditor() {
       el("div", {class: "editor-head"}, el("label", {for: qid, class: "editor-label", text: t("b.question", {n})}), remove),
       question,
       el("div", {class: "editor-row"},
-        el("label", {class: "field"}, el("span", {text: t("b.answer")}), answer),
+        el("div", {class: "field"}, el("label", {for: qid + "-a", text: t("b.answer")}), answer, also),
         el("div", {class: "field"}, el("span", {text: t("b.check")}), options)),
       help));
   });
@@ -354,7 +396,9 @@ function renderEditor() {
 async function saveDraft() {
   const draft = state.draft;
   draft.name = $("test-name").value;
-  const questions = draft.questions.filter((q) => q.question.trim() || q.answer.trim());
+  const questions = draft.questions
+    .filter((q) => q.question.trim() || q.answer.trim())
+    .map((q) => ({...q, also: (q.also || []).map((a) => a.trim()).filter(Boolean)}));
   if (!draft.name.trim()) { showNotice(t("b.needName")); $("test-name").focus(); return; }
   for (const [index, q] of questions.entries()) {
     if (!q.question.trim()) { showNotice(t("b.needQuestion", {n: index + 1})); return; }
@@ -387,48 +431,185 @@ async function loadCosts() {
   }
 }
 
+function toggleAi(spec) {
+  if (state.selected.has(spec)) state.selected.delete(spec);
+  else if (state.selected.size < MAX_AIS) state.selected.add(spec);
+  savePicks();
+}
+
+function priceText(info, cost) {
+  if (info.family === "demo" || info.free || cost === 0) return t("ai.free");
+  return cost === undefined || cost === null ? "" : t("ai.upTo", {money: rupees(cost)});
+}
+
 function aiCard(info) {
   const selected = state.selected.has(info.spec);
   const full = !selected && state.selected.size >= MAX_AIS;
-  const cost = state.costs?.costs?.[info.spec];
+  const cost = info.cost !== undefined ? info.cost : state.costs?.costs?.[info.spec];
   const input = el("input", {type: "checkbox", checked: selected, disabled: full,
     onchange: () => {
-      if (state.selected.has(info.spec)) state.selected.delete(info.spec);
-      else if (state.selected.size < MAX_AIS) state.selected.add(info.spec);
-      savePicks();
+      toggleAi(info.spec);
       renderAis();
     }});
-  const price = info.family === "demo" ? t("ai.free") : (cost === undefined || cost === null ? "" : t("ai.upTo", {money: rupees(cost)}));
+  const price = priceText(info, cost);
   const label = el("label", {class: "pick-main", title: full ? t("ai.max") : null}, input,
     el("span", {class: "pick-text"},
       el("span", {class: "pick-title", text: info.label}),
       el("span", {class: "pick-blurb", text: info.blurb}),
       price ? el("span", {class: "pick-meta", text: price}) : null));
-  const card = el("div", {class: "card pick" + (selected ? " selected" : "")}, label);
-  if (info.provider && PROVIDERS[info.provider] && !hasKey(info.provider)) {
-    card.append(el("div", {class: "card-tools"},
-      el("span", {class: "muted small", text: t("ai.needsKey", {maker: PROVIDERS[info.provider].maker})}),
-      el("button", {class: "link", type: "button", text: t("ai.connect"), onclick: () => openConnect(info.provider)})));
+  return el("div", {class: "card pick" + (selected ? " selected" : "")}, label);
+}
+
+/* ---------- every AI on OpenRouter ---------- */
+
+// Popular picks: the newest flagship from each big maker, then the newest
+// small one from the three largest, so a first test compares fairly.
+const POPULAR_MAKERS = [["anthropic/"], ["openai/"], ["google/"], ["deepseek/"], ["meta/", "meta-llama/"], ["qwen/"], ["x-ai/"], ["mistralai/"]];
+const POPULAR_SMALL = [["openai/"], ["google/"], ["anthropic/"]];
+const SMALL_MODEL = /[-.:](mini|nano|lite|flash|haiku|small|tiny)\b/;
+const NOT_A_CHAT_AI = /(image|audio|vision|embed|guard|search|online|research|tts|transcribe|realtime|preview|codex)/;
+// Popular picks stay under $25 per million words written, so nobody's first
+// test lands on a "pro" tier by accident. Search still finds every AI.
+const POPULAR_MAX_OUTPUT_USD = 25e-6;
+
+async function loadLiveModels() {
+  if (state.live.loaded) return;
+  try {
+    const reply = await bridge.call("live_models");
+    state.live.models = reply.models || [];
+    state.live.error = null;
+  } catch (error) {
+    state.live.models = [];
+    state.live.error = error.message;
   }
-  return card;
+  state.live.loaded = true;
+}
+
+function liveCost(m) {
+  const tokens = state.costs?.tokens;
+  if (!tokens || m.input_usd === null || m.input_usd === undefined || m.output_usd === null || m.output_usd === undefined) return null;
+  return tokens.input * m.input_usd + tokens.output * m.output_usd;
+}
+
+function liveInfo(m) {
+  const name = splitModelName(m);
+  return {spec: "model:openrouter/" + m.id, provider: "openrouter", label: name.short, blurb: name.maker,
+    family: m.id, version: [0, 0], free: Boolean(m.free), cost: liveCost(m), created: m.created || 0};
+}
+
+function popularModels(models) {
+  // Text in, text out: image and voice makers can reply in words too, but
+  // they are not what a written test is for.
+  const writesText = (m) => !Array.isArray(m.outputs) || m.outputs.every((kind) => kind === "text");
+  const usable = models.filter((m) => !m.free && writesText(m) && !NOT_A_CHAT_AI.test(m.id)
+    && m.output_usd !== null && m.output_usd !== undefined && m.output_usd <= POPULAR_MAX_OUTPUT_USD);
+  const newest = (prefixes, small) => usable
+    .filter((m) => prefixes.some((prefix) => m.id.startsWith(prefix)) && SMALL_MODEL.test(m.id) === small)
+    .sort((a, b) => (b.created || 0) - (a.created || 0))[0];
+  const picks = [...POPULAR_MAKERS.map((group) => newest(group, false)), ...POPULAR_SMALL.map((group) => newest(group, true))];
+  return picks.filter(Boolean);
+}
+
+function orMatches() {
+  const query = state.orQuery.trim().toLowerCase();
+  let list = state.live.models.filter((m) => !query || m.id.toLowerCase().includes(query) || (m.name || "").toLowerCase().includes(query));
+  if (state.orFree) list = list.filter((m) => m.free);
+  const picked = (m) => (state.selected.has("model:openrouter/" + m.id) ? 1 : 0);
+  const price = (m) => liveCost(m) ?? Infinity;
+  list.sort((a, b) => picked(b) - picked(a)
+    || (state.orSort === "cheap" ? price(a) - price(b) : (b.created || 0) - (a.created || 0)));
+  return list;
+}
+
+function orRow(m) {
+  const info = liveInfo(m);
+  const selected = state.selected.has(info.spec);
+  const full = !selected && state.selected.size >= MAX_AIS;
+  const box = el("input", {type: "checkbox", checked: selected, disabled: full,
+    onchange: () => {
+      toggleAi(info.spec);
+      $("picked-count").textContent = t("ai.picked", {n: state.selected.size});
+      renderOrResults();
+    }});
+  return el("li", {},
+    el("label", {class: "or-row" + (selected ? " on" : ""), title: full ? t("ai.max") : m.id}, box,
+      el("span", {class: "or-text"},
+        el("span", {class: "or-name", text: info.label}),
+        el("span", {class: "or-meta", text: info.blurb})),
+      el("span", {class: "or-price", text: priceText(info, info.cost)})));
+}
+
+function renderOrResults() {
+  const list = $("or-list");
+  if (!list) return;
+  const matches = orMatches();
+  list.replaceChildren(...matches.slice(0, state.orShown).map(orRow));
+  if (!matches.length) list.append(el("li", {class: "muted small or-empty", text: t("ai.noMatch")}));
+  const more = $("or-more");
+  more.hidden = matches.length <= state.orShown;
+  more.textContent = t("ai.showMore", {n: matches.length - state.orShown});
+}
+
+function renderOpenRouter(root) {
+  const models = state.live.models;
+  root.append(el("h2", {class: "group-title"}, t("ai.orTitle"),
+    models.length ? el("span", {class: "muted", text: " · " + t("ai.orCount", {n: models.length})}) : null));
+  if (!hasKey("openrouter")) {
+    root.append(el("div", {class: "or-connect"},
+      el("p", {class: "small", text: t("ai.orConnect")}),
+      el("button", {class: "secondary", type: "button", text: t("ai.orConnectButton"), onclick: () => openConnect("openrouter")})));
+  }
+  if (!models.length) {
+    // Offline or OpenRouter unreachable: the AIs priced inside the app still work.
+    if (state.live.error) {
+      root.append(el("p", {class: "muted small"}, t("ai.liveFailed"), " ",
+        el("button", {class: "link", type: "button", text: t("ai.retry"),
+          onclick: () => { state.live.loaded = false; renderAis(); }})));
+    }
+    const saved = (state.catalog?.models || []).filter((m) => m.runnable && m.provider === "openrouter").map(modelInfo);
+    root.append(el("div", {class: "grid"}, saved.map(aiCard)));
+    return;
+  }
+  root.append(el("p", {class: "sub-title", text: t("ai.popular")}));
+  root.append(el("div", {class: "grid"}, popularModels(models).map((m) => aiCard(liveInfo(m)))));
+  const search = el("input", {type: "search", value: state.orQuery, placeholder: t("ai.search", {n: models.length}),
+    "aria-label": t("ai.search", {n: models.length}),
+    oninput: (event) => { state.orQuery = event.target.value; state.orShown = 40; renderOrResults(); }});
+  const free = el("input", {type: "checkbox", checked: state.orFree,
+    onchange: (event) => { state.orFree = event.target.checked; state.orShown = 40; renderOrResults(); }});
+  const sort = el("select", {"aria-label": t("ai.sortLabel"),
+    onchange: (event) => { state.orSort = event.target.value; renderOrResults(); }},
+  el("option", {value: "new", text: t("ai.sortNew")}), el("option", {value: "cheap", text: t("ai.sortCheap")}));
+  sort.value = state.orSort;
+  root.append(el("div", {class: "or-tools"}, search, el("label", {class: "or-free"}, free, " ", t("ai.onlyFree")), sort));
+  root.append(el("ul", {class: "or-list", id: "or-list"}));
+  root.append(el("button", {class: "link more-link", id: "or-more", type: "button",
+    onclick: () => { state.orShown += 40; renderOrResults(); }}));
+  renderOrResults();
 }
 
 async function renderAis() {
-  await loadCosts();
+  await Promise.all([loadCosts(), loadLiveModels()]);
   const root = $("ai-list");
   root.replaceChildren();
   const models = state.catalog?.models || [];
   const infos = models.filter((m) => m.runnable).map(modelInfo);
-  const known = new Set(infos.map((i) => i.spec));
-  for (const spec of [...state.selected]) if (!known.has(spec)) state.selected.delete(spec);
+  const known = new Set([...infos.map((i) => i.spec), ...state.live.models.map((m) => "model:openrouter/" + m.id)]);
+  for (const spec of [...state.selected]) {
+    // Keep OpenRouter picks while its list is out of reach; the run checks them.
+    if (!known.has(spec) && !(state.live.error && spec.startsWith("model:openrouter/"))) state.selected.delete(spec);
+  }
   $("picked-count").textContent = t("ai.picked", {n: state.selected.size});
 
   const demo = infos.filter((i) => i.family === "demo");
   root.append(el("h2", {class: "group-title", text: t("ai.demo")}));
   root.append(el("div", {class: "grid"}, demo.map(aiCard)));
 
-  const providers = [...new Set(infos.filter((i) => i.family !== "demo").map((i) => i.provider))];
-  for (const provider of providers) {
+  // Direct accounts appear once their key is connected (or one of their AIs
+  // is already picked); OpenRouter, below, reaches every lab with one key.
+  const direct = [...new Set(infos.filter((i) => i.family !== "demo" && i.provider !== "openrouter").map((i) => i.provider))]
+    .filter((provider) => hasKey(provider) || [...state.selected].some((spec) => providerOf(spec) === provider));
+  for (const provider of direct) {
     const mine = infos.filter((i) => i.provider === provider && i.family !== "demo");
     const newest = new Map();
     for (const info of mine) {
@@ -452,7 +633,12 @@ async function renderAis() {
       if (open) root.append(el("div", {class: "grid"}, older.map(aiCard)));
     }
   }
-  if (models.some((m) => !m.runnable)) root.append(el("p", {class: "muted small soon", text: t("ai.soon")}));
+  renderOpenRouter(root);
+  if (!direct.length) {
+    root.append(el("p", {class: "muted small soon"}, t("ai.otherAccounts"), " ",
+      el("button", {class: "link", type: "button", text: t("nav.accounts"),
+        onclick: () => { state.returnTo = "ais"; go("accounts"); }})));
+  }
 }
 
 /* ---------- step 3: start ---------- */
@@ -734,6 +920,11 @@ function renderReportCard() {
     const list = el("ul", {class: "verdicts"});
     verdicts.forEach((verdict, index) => list.append(verdictRow(verdict, index)));
     panel.append(el("h2", {class: "group-title", text: t("res.compare")}), list);
+    // 3/3 against 0/3 is still "too close to call"; say why in plain words.
+    const questions = new Set((report.results || []).map((r) => r.task_id)).size;
+    if (questions < 10 && verdicts.some((v) => v.verdict !== "clearly_different")) {
+      panel.append(el("p", {class: "muted small", text: t("res.fewQuestions", {n: questions})}));
+    }
   }
   panel.append(el("p", {class: "honest", text: t("res.honest")}));
 }
@@ -772,6 +963,17 @@ function selectTab(name) {
   if (name === "details") loadDetails();
 }
 
+/* What the check read from a reply it marked wrong, so a mark can be
+   checked by eye: "The app read ₹2,400." */
+function whyWrong(reply, question) {
+  if (reply.passed !== false) return null;
+  let text = "";
+  if (question.check === "includes") text = t("res.notMentioned");
+  else if (reply.found) text = t("res.readAs", {found: reply.found});
+  else if (question.check === "number") text = t("res.noNumber");
+  return text ? el("p", {class: "why-wrong small", text}) : null;
+}
+
 async function renderAnswers() {
   const panel = $("panel-answers");
   if (panel.dataset.run === state.runId && panel.childElementCount) return;
@@ -800,11 +1002,15 @@ async function renderAnswers() {
           el("strong", {text: prettyName(reply.runner, reply.label)}),
           repeats ? el("span", {class: "muted small", text: t("res.try", {n: (reply.repeat || 0) + 1})}) : null,
           el("span", {class: "feed-mark", text: mark.text})),
-        el("p", {class: "reply-text" + (reply.output ? "" : " muted"), text})));
+        el("p", {class: "reply-text" + (reply.output ? "" : " muted"), text}),
+        whyWrong(reply, question)));
     }
+    const others = question.also || [];
     panel.append(el("article", {class: "card answer-card"},
       el("h2", {}, el("span", {class: "muted", text: `${index + 1}. `}), question.question),
-      el("p", {class: "small"}, el("strong", {text: t("res.rightAnswer") + ": "}), question.answer, el("span", {class: "muted", text: ` · ${t(checkName[question.check] || "b.includes")}`})),
+      el("p", {class: "small"}, el("strong", {text: t("res.rightAnswer") + ": "}), question.answer,
+        others.length ? el("span", {text: ` · ${t("res.alsoRight")}: ${others.join(", ")}`}) : null,
+        el("span", {class: "muted", text: ` · ${t(checkName[question.check] || "b.includes")}`})),
       replies.some((r) => r.edited) ? el("p", {class: "muted small", text: t("res.edited")}) : null,
       list));
   });
@@ -1069,8 +1275,10 @@ function providerCard(provider, onSaved) {
 
 function usefulProviders() {
   // Every company is a first-class card: each one either runs tests
-  // directly or, for OpenRouter, reaches the other labs' AIs.
-  const all = (state.catalog?.providers || []).filter((p) => PROVIDERS[p.id]);
+  // directly or, for OpenRouter, reaches the other labs' AIs. A
+  // "compatible" service also needs its address, which this screen
+  // cannot set, so it is left to the engine's environment.
+  const all = (state.catalog?.providers || []).filter((p) => PROVIDERS[p.id] && p.id !== "compatible");
   return {main: all, other: []};
 }
 

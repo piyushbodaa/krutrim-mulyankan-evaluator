@@ -59,11 +59,6 @@ const sideBySide = (() => {
   function model(id) {
     return S.models.find((m) => m.id === id) || {id, name: id};
   }
-  function splitName(m) {
-    const name = m.name || m.id;
-    const at = name.indexOf(": ");
-    return at > 0 ? {maker: name.slice(0, at), short: name.slice(at + 2)} : {maker: m.id.split("/")[0], short: name};
-  }
   function typicalCost(m) {
     if (m.free) return t("ai.free");
     if (m.input_usd === null || m.input_usd === undefined) return t("side.priceUnknown");
@@ -215,12 +210,15 @@ const sideBySide = (() => {
     renderPicks();
   }
 
-  // Without saved picks: the newest flagship from four big makers.
+  // Without saved picks: the newest flagship from four big makers, under
+  // $25 per million words written so a first question never lands on a
+  // "pro" tier by accident.
   function suggestedPicks() {
     const picks = [];
     for (const prefix of ["anthropic/claude-sonnet", "openai/gpt", "google/gemini", "meta-llama/llama", "deepseek/", "qwen/"]) {
       const match = S.models
-        .filter((m) => m.id.startsWith(prefix) && !m.free && !/[-.:](mini|nano|lite|flash|vision|image|audio|embed|guard|preview|search)\b/.test(m.id))
+        .filter((m) => m.id.startsWith(prefix) && !m.free && m.output_usd !== null && m.output_usd !== undefined && m.output_usd <= 25e-6
+          && !/[-.:](mini|nano|lite|flash|vision|image|audio|embed|guard|preview|search)\b/.test(m.id))
         .sort((a, b) => (b.created || 0) - (a.created || 0))[0];
       if (match) picks.push(match.id);
       if (picks.length === MAX) break;
@@ -238,7 +236,7 @@ const sideBySide = (() => {
     const box = $("side-picks");
     box.replaceChildren();
     for (const id of S.picks) {
-      const name = splitName(model(id));
+      const name = splitModelName(model(id));
       box.append(el("span", {class: "pick-pill", title: id},
         el("span", {text: name.short}),
         el("button", {type: "button", class: "pill-x", "aria-label": t("side.remove", {ai: name.short}), text: "×",
@@ -301,7 +299,7 @@ const sideBySide = (() => {
     }
     for (const m of shown) {
       const picked = S.picks.includes(m.id);
-      const name = splitName(m);
+      const name = splitModelName(m);
       const box = el("input", {type: "checkbox", checked: picked, disabled: !picked && S.picks.length >= MAX,
         onchange: () => {
           if (S.picks.includes(m.id)) S.picks = S.picks.filter((p) => p !== m.id);
@@ -322,7 +320,7 @@ const sideBySide = (() => {
 
   function newPane(id, slot) {
     const m = model(id);
-    const name = splitName(m);
+    const name = splitModelName(m);
     const pane = {id, slot, m, text: "", thinking: "", connected: null, firstThinking: null, firstAnswer: null,
       done: false, metrics: null, server: null, error: null, dirty: true, view: S.view, follow: true};
     const state = el("span", {class: "pane-state busy", role: "img"}, el("i", {class: "pulse"}));
@@ -819,7 +817,7 @@ const sideBySide = (() => {
     for (const pane of S.ask.panes) {
       const mine = wins.filter(([p]) => p === pane).map(([, kind]) => kind);
       if (!mine.length) continue;
-      summary.append(el("span", {class: "sum-item"}, ...mine.map(badge), el("span", {text: splitName(pane.m).short})));
+      summary.append(el("span", {class: "sum-item"}, ...mine.map(badge), el("span", {text: splitModelName(pane.m).short})));
     }
     summary.append(el("span", {class: "sum-item sum-total", title: t("side.tipTotal")}, icon("total"), el("span", {text: rupees(spent)})));
     summary.hidden = false;
@@ -833,7 +831,7 @@ const sideBySide = (() => {
     const lines = [`# ${t("side.title")}`, "", `**${t("side.promptLabel")}:** ${S.ask.prompt}`, ""];
     for (const pane of S.ask.panes) {
       const m = pane.metrics || {};
-      lines.push(`## ${splitName(pane.m).short} (${pane.id})`, "");
+      lines.push(`## ${splitModelName(pane.m).short} (${pane.id})`, "");
       lines.push(`| ${t("side.firstToken")} | ${t("side.speed")} | ${t("side.time")} | ${t("side.cost")} | ${t("side.mInput")} | ${t("side.mOutput")} |`);
       lines.push("|---|---|---|---|---|---|");
       lines.push(`| ${secs(firstToken(pane))} | ${m.tokens_per_s ? t("side.tps", {n: m.tokens_per_s.toFixed(1)}) : "—"} | ${secs(m.total_s)} | ${money(m.cost_usd)} | ${tokens(m.input_tokens)} | ${tokens(m.output_tokens)} |`, "");
