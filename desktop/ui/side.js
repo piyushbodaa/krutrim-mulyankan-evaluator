@@ -215,12 +215,15 @@ const sideBySide = (() => {
     renderPicks();
   }
 
-  // Without saved picks: the newest flagship from four big makers.
+  // Without saved picks: the newest flagship from four big makers, under
+  // $25 per million words written so a first question never lands on a
+  // "pro" tier by accident.
   function suggestedPicks() {
     const picks = [];
     for (const prefix of ["anthropic/claude-sonnet", "openai/gpt", "google/gemini", "meta-llama/llama", "deepseek/", "qwen/"]) {
       const match = S.models
-        .filter((m) => m.id.startsWith(prefix) && !m.free && !/[-.:](mini|nano|lite|flash|vision|image|audio|embed|guard|preview|search)\b/.test(m.id))
+        .filter((m) => m.id.startsWith(prefix) && !m.free && m.output_usd !== null && m.output_usd !== undefined && m.output_usd <= 25e-6
+          && !/[-.:](mini|nano|lite|flash|vision|image|audio|embed|guard|preview|search)\b/.test(m.id))
         .sort((a, b) => (b.created || 0) - (a.created || 0))[0];
       if (match) picks.push(match.id);
       if (picks.length === MAX) break;

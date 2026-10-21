@@ -73,7 +73,8 @@ pub fn provider_config(provider: &str) -> Option<ProviderConfig> {
             protocol: "openai",
             key_env: Some("OPENROUTER_API_KEY"),
             base_url: Some("https://openrouter.ai/api/v1"),
-            base_url_env: None,
+            // The same stand-in switch the side-by-side screen honours.
+            base_url_env: Some("KM_OPENROUTER_BASE"),
             max_tokens_param: "max_tokens",
             supports_seed: false,
             local: false,
@@ -221,6 +222,28 @@ pub fn retry_delay_cap(err: &ApiError, attempt: u32, cap: f64) -> f64 {
         }
     }
     (2f64).powi(attempt as i32).min(cap)
+}
+
+/// Extra tries for a request refused with HTTP 429 (too many requests).
+pub const RATE_LIMIT_RETRIES: u32 = 4;
+
+/// Retry only rate limits, honouring Retry-After. A 429 is refused before
+/// any work is done, so it is never billed and the cost stays known; this is
+/// what lets parallel runs ride out a provider's burst limit.
+pub fn retry_rate_limits<T>(
+    sleep: &dyn Fn(f64),
+    mut f: impl FnMut() -> Result<T, ApiError>,
+) -> Result<T, ApiError> {
+    let mut attempt = 0;
+    loop {
+        match f() {
+            Err(e @ ApiError::Status { code: 429, .. }) if attempt < RATE_LIMIT_RETRIES => {
+                sleep(retry_delay(&e, attempt));
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
 }
 
 pub type SleepFn = Box<dyn Fn(f64) + Send + Sync>;

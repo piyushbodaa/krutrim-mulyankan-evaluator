@@ -92,7 +92,8 @@ def test_own_test_saves_runs_and_shows_every_reply(tmp_path):
     assert [q["question"] for q in form["questions"]] == [q["question"] for q in QUESTIONS]
     assert [q["check"] for q in form["questions"]] == ["includes", "number", "exact", "includes"]
     assert form["questions"][3]["answer"] == "(a) ₹5 [x] .*+?"  # symbols survive the round trip
-    assert form["questions"][1]["answer"] == "90"
+    # Kept as typed; the number check reads "₹90" as 90.
+    assert form["questions"][1]["answer"] == "₹90"
 
     packs = {pack["id"]: pack for pack in replies["c"]["result"]["packs"]}
     assert packs[test_id]["mine"] is True and packs[test_id]["name"] == "GK"
@@ -117,6 +118,56 @@ def test_own_test_saves_runs_and_shows_every_reply(tmp_path):
     )
     assert echo["output"] == QUESTIONS[0]["question"] and echo["label"] == "Parrot bot"
     assert not any(row["edited"] for row in answers["answers"])
+
+
+@needs_engine
+def test_answer_checks_keep_other_right_answers_and_say_what_they_read(tmp_path):
+    questions = [
+        {
+            "question": "What is the capital of India?",
+            "answer": "New Delhi",
+            "also": ["Delhi", " ", "New Delhi"],
+            "check": "includes",
+        },
+        {"question": "How much is 18% GST on ₹500?", "answer": "₹90", "check": "number"},
+    ]
+    saved = _call(
+        tmp_path,
+        [{"id": "s", "method": "save_test", "params": {"name": "Mixed", "questions": questions}}],
+    )["s"]["result"]
+    test_id = saved["id"]
+    suite = json.loads((tmp_path / "runs/my-tests" / f"{test_id}.yaml").read_text())
+    graders = [task["grader"] for task in suite["tasks"]]
+    assert graders == [
+        {"type": "answer", "check": "mentions", "expected": ["New Delhi", "Delhi"]},
+        {"type": "answer", "check": "number", "expected": ["₹90"]},
+    ]
+    run_params = {
+        "suite": test_id,
+        "runners": ["oracle", "echo"],
+        "max_usd": 0,
+        "repeats": 1,
+        "confirmed": True,
+    }
+    replies = _call(
+        tmp_path,
+        [
+            {"id": "g", "method": "get_test", "params": {"id": test_id}},
+            {"id": "r", "method": "run", "params": run_params},
+        ],
+    )
+    form = replies["g"]["result"]["questions"]
+    assert form[0]["also"] == ["Delhi"] and form[1]["also"] == []
+    run_id = replies["r"]["result"]["run_id"]
+    answers = _call(tmp_path, [{"id": "a", "method": "answers", "params": {"run_id": run_id}}])[
+        "a"
+    ]["result"]["answers"]
+    rows = {(row["task_id"], row["runner"]): row for row in answers}
+    assert rows[("Q01", "oracle")]["passed"] is True
+    assert rows[("Q02", "oracle")]["passed"] is True
+    # The parrot repeats the question: 500 is read, and 500 is not 90.
+    assert rows[("Q02", "echo")]["passed"] is False and rows[("Q02", "echo")]["found"] == "500"
+    assert rows[("Q01", "echo")]["passed"] is False and rows[("Q01", "echo")]["found"] is None
 
 
 @needs_engine

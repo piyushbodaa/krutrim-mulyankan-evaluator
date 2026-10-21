@@ -18,7 +18,7 @@ pub struct Grade {
 }
 
 impl Grade {
-    fn graded(name: &str, passed: bool, details: Map<String, Value>) -> Grade {
+    pub(crate) fn graded(name: &str, passed: bool, details: Map<String, Value>) -> Grade {
         Grade {
             grader: name.into(),
             status: "graded".into(),
@@ -151,6 +151,16 @@ pub fn grade_with_judge(
     judge: Option<&crate::judge::JudgeFn>,
 ) -> Grade {
     match &task.grader {
+        GraderSpec::Answer {
+            check,
+            expected,
+            tolerance,
+        } => crate::answer::grade(
+            *check,
+            expected,
+            tolerance.as_ref().map(|(value, _)| *value),
+            output,
+        ),
         GraderSpec::Exact {
             expected,
             case_sensitive,
@@ -305,6 +315,23 @@ fn grade_json(expected: &Value, output: &str) -> Grade {
 
 // ---- numeric (indic digits, ₹/INR, lakh/crore) ----
 
+/// Any Unicode decimal digit (Devanagari, Bengali, full-width…) as ASCII.
+/// unicodedata.digit() accepts every Nd digit; Rust's char::to_digit is
+/// ASCII-only, so the Nd blocks are mapped explicitly.
+pub(crate) fn nd_digit(c: char) -> Option<char> {
+    const ZEROES: &[u32] = &[
+        0x0030, 0x0660, 0x06f0, 0x07c0, 0x0966, 0x09e6, 0x0a66, 0x0ae6, 0x0b66, 0x0be6, 0x0c66,
+        0x0ce6, 0x0d66, 0x0de6, 0x0e50, 0x0ed0, 0x0f20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946,
+        0x19d0, 0x1a80, 0x1a90, 0x1b50, 0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900, 0xa9d0,
+        0xa9f0, 0xaa50, 0xabf0, 0xff10,
+    ];
+    let u = c as u32;
+    ZEROES
+        .iter()
+        .find(|z| u >= **z && u < *z + 10)
+        .map(|z| char::from_digit(u - z, 10).unwrap())
+}
+
 pub fn indic_number(text: &str) -> Result<Decimal, String> {
     let lowered: String = text
         .nfkc()
@@ -313,21 +340,6 @@ pub fn indic_number(text: &str) -> Result<Decimal, String> {
         .chars()
         .flat_map(|c| c.to_lowercase())
         .collect();
-    // unicodedata.digit() accepts every Unicode decimal digit; Rust's
-    // char::to_digit is ASCII-only, so map the Nd blocks explicitly.
-    fn nd_digit(c: char) -> Option<char> {
-        const ZEROES: &[u32] = &[
-            0x0030, 0x0660, 0x06f0, 0x07c0, 0x0966, 0x09e6, 0x0a66, 0x0ae6, 0x0b66, 0x0be6, 0x0c66,
-            0x0ce6, 0x0d66, 0x0de6, 0x0e50, 0x0ed0, 0x0f20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946,
-            0x19d0, 0x1a80, 0x1a90, 0x1b50, 0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900, 0xa9d0,
-            0xa9f0, 0xaa50, 0xabf0, 0xff10,
-        ];
-        let u = c as u32;
-        ZEROES
-            .iter()
-            .find(|z| u >= **z && u < *z + 10)
-            .map(|z| char::from_digit(u - z, 10).unwrap())
-    }
     let converted: String = lowered.chars().map(|c| nd_digit(c).unwrap_or(c)).collect();
     let re = regex::Regex::new(
         r"^(?:₹|rs\.?|inr)?\s*([+-]?(?:\d+(?:,\d+)*)(?:\.\d+)?)\s*(lakh|lakhs|crore|crores|लाख|करोड़|करोड)?$",

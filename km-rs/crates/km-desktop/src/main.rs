@@ -36,6 +36,9 @@ const KEY_ENVS: &[(&str, &str)] = &[
 const URL_ENVS: &[&str] = &["OLLAMA_BASE_URL", "VLLM_BASE_URL", "COMPATIBLE_BASE_URL"];
 const MAX_REPEATS: i64 = 5;
 const MAX_RUNNERS: usize = 6;
+/// Answers asked at once in a test. Each AI also has its own limit (four,
+/// two for free OpenRouter models), so one slow AI never holds up the rest.
+const PARALLEL_CALLS: usize = 8;
 
 fn honesty() -> Value {
     let mut m = Map::new();
@@ -643,16 +646,18 @@ impl Session {
                 "free": true, "suggested": true, "runnable": true,
                 "price_usd": {"input": 0, "output": 0}}));
         }
+        // The newest of each size on direct accounts; OpenRouter's own picks
+        // come from its live list in the window.
         const SUGGESTED: &[&str] = &[
-            "anthropic/claude-haiku-4-5",
-            "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-opus-4-6",
+            "anthropic/claude-haiku-5-5",
+            "anthropic/claude-sonnet-5-5",
+            "anthropic/claude-opus-5-5",
             "openai/gpt-5",
             "openai/gpt-5-mini",
             "openai/gpt-4o-mini",
             "gemini/gemini-2.5-pro",
             "gemini/gemini-2.5-flash",
-            "xai/grok-4.20",
+            "xai/grok-4.3",
             "openrouter/anthropic/claude-sonnet-4.6",
             "openrouter/anthropic/claude-haiku-4.5",
             "openrouter/openai/gpt-5",
@@ -698,10 +703,12 @@ impl Session {
                 "blurb_hi": "जाँची हुई कीमत दर्ज नहीं है, इसलिए भुगतान वाला रन रुक जाता है। कीमत जोड़ने के बाद मॉडल चुनें।",
                 "free": false, "suggested": false, "runnable": false, "price_usd": null}));
         }
-        let mut names = BTreeMap::new();
+        let mut names = self.saved_names();
         for card in &models {
             if let (Some(spec), Some(name)) = (card["spec"].as_str(), card["name"].as_str()) {
-                names.insert(spec.to_string(), name.to_string());
+                names
+                    .entry(spec.to_string())
+                    .or_insert_with(|| name.to_string());
             }
         }
         *self.names.lock().unwrap() = names;
@@ -967,10 +974,43 @@ impl Session {
             _ => {
                 let models = Value::Array(live::openrouter_models(&live::openrouter_base())?);
                 *cache = Some((Instant::now(), models.clone()));
+                self.remember_names(&models);
                 models
             }
         };
         Ok(json!({"models": models, "usd_to_inr": self.settings.usd_to_inr}))
+    }
+
+    fn names_file(&self) -> PathBuf {
+        self.settings.runs_dir.join("model-names.json")
+    }
+
+    /// Names of OpenRouter AIs seen in the live list, kept on disk so report
+    /// cards read "Claude Sonnet 5.5" after a restart, offline too.
+    fn saved_names(&self) -> BTreeMap<String, String> {
+        std::fs::read_to_string(self.names_file())
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    fn remember_names(&self, models: &Value) {
+        let mut saved = self.saved_names();
+        let mut names = self.names.lock().unwrap();
+        for model in models.as_array().into_iter().flatten() {
+            let (Some(id), Some(name)) = (model["id"].as_str(), model["name"].as_str()) else {
+                continue;
+            };
+            // "Anthropic: Claude Sonnet 5.5" reads as "Claude Sonnet 5.5".
+            let short = name.split_once(": ").map(|(_, rest)| rest).unwrap_or(name);
+            let spec = format!("model:openrouter/{id}");
+            names.insert(spec.clone(), short.to_string());
+            saved.insert(spec, short.to_string());
+        }
+        if let Ok(text) = serde_json::to_string(&saved) {
+            let _ = std::fs::create_dir_all(&self.settings.runs_dir);
+            let _ = std::fs::write(self.names_file(), text);
+        }
     }
 
     /// Ask every picked model at once. Each streams into its own pane through
@@ -1271,7 +1311,7 @@ impl Session {
             judge: judge.as_deref(),
         };
         let store = Store::open(&settings.db_path)?;
-        let summary = run_suite(
+        let summary = run_suite_with(
             loaded,
             built,
             &store,
@@ -1282,6 +1322,7 @@ impl Session {
             None,
             &callbacks,
             Some(self.cancel.clone()),
+            PARALLEL_CALLS,
         )
         .map_err(|PreflightError(problems)| {
             let msg = problems.join("; ");
@@ -1362,15 +1403,16 @@ impl Session {
             return Vec::new();
         };
         let rate = self.settings.usd_to_inr;
-        let labels: BTreeMap<String, String> = self
+        let labels: BTreeMap<String, (String, String)> = self
             .suites()
             .unwrap_or_default()
             .iter()
             .map(|s| {
                 let label = if self.is_mine(s) {
-                    s.description.clone()
+                    (s.description.clone(), s.description.clone())
                 } else {
-                    pack_copy(s).0
+                    let copy = pack_copy(s);
+                    (copy.0, copy.1)
                 };
                 (s.name.clone(), label)
             })
@@ -1380,8 +1422,12 @@ impl Session {
             .unwrap_or_default()
             .iter()
             .map(|run| {
+                let (label, label_hi) = labels
+                    .get(&run.suite_name)
+                    .cloned()
+                    .unwrap_or_else(|| (run.suite_name.clone(), run.suite_name.clone()));
                 json!({"id": run.id, "suite": run.suite_name, "status": run.status,
-                       "suite_label": labels.get(&run.suite_name).cloned().unwrap_or_else(|| run.suite_name.clone()),
+                       "suite_label": label, "suite_label_hi": label_hi,
                        "runners": run.runners, "spent_usd": run.spent_usd,
                        "spent_inr": run.spent_usd * rate, "started_at": run.started_at,
                        "repeats": run.repeats})
@@ -1492,14 +1538,17 @@ impl Session {
 }
 
 const MY_TEST_PREFIX: &str = "my-";
-const MAX_QUESTIONS: usize = 50;
+const MAX_QUESTIONS: usize = 200;
 const MAX_QUESTION_CHARS: usize = 4000;
 const MAX_ANSWER_CHARS: usize = 300;
+const MAX_ANSWERS: usize = 5;
 const MAX_TEST_NAME_CHARS: usize = 80;
 const NUMBER_SUFFIX: &str = "\n\nReply with the number only.";
 const EXACT_SUFFIX: &str = "\n\nReply with the answer only, nothing else.";
+#[cfg(test)]
 const REGEX_META: &str = "\\.+*?()|[]{}^$#&-~";
 
+#[cfg(test)]
 fn regex_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 8);
     for c in text.chars() {
@@ -1562,6 +1611,20 @@ fn has_devanagari(text: &str) -> bool {
 }
 
 fn question_form(task: &Task) -> Value {
+    if let GraderSpec::Answer {
+        check, expected, ..
+    } = &task.grader
+    {
+        let check = match check {
+            AnswerCheck::Number => "number",
+            AnswerCheck::Exact => "exact",
+            AnswerCheck::Mentions => "includes",
+        };
+        return json!({"question": strip_suffix(&task.prompt),
+                      "answer": expected.first().cloned().unwrap_or_default(),
+                      "also": expected.iter().skip(1).collect::<Vec<_>>(),
+                      "check": check});
+    }
     let (check, answer) = match &task.grader {
         GraderSpec::Regex { pattern, .. } => (
             "includes",
@@ -1578,7 +1641,7 @@ fn question_form(task: &Task) -> Value {
         GraderSpec::Numeric { expected_raw, .. } => ("number", expected_raw.clone()),
         _ => ("includes", String::new()),
     };
-    json!({"question": strip_suffix(&task.prompt), "answer": answer, "check": check})
+    json!({"question": strip_suffix(&task.prompt), "answer": answer, "also": [], "check": check})
 }
 
 impl Session {
@@ -1672,41 +1735,51 @@ impl Session {
             if answer.is_empty() {
                 return Err(format!("Question {n} needs the right answer."));
             }
-            if answer.chars().count() > MAX_ANSWER_CHARS {
-                return Err(format!("The right answer for question {n} is too long."));
+            // Other replies that also count as right ("Delhi" for "New Delhi").
+            let mut answers = vec![answer];
+            for other in item
+                .get("also")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !answers.iter().any(|a| a == other) {
+                    answers.push(other.to_string());
+                }
             }
-            let (grader, prompt) = match check.as_str() {
-                "includes" | "" => (
-                    json!({"type": "regex", "pattern": format!(".*{}.*", regex_escape(&answer)),
-                           "case_sensitive": false}),
-                    question.clone(),
-                ),
-                "exact" => (
-                    json!({"type": "exact", "expected": [answer], "case_sensitive": false,
-                           "normalize_whitespace": true}),
-                    format!("{question}{EXACT_SUFFIX}"),
-                ),
+            if answers.len() > MAX_ANSWERS {
+                return Err(format!(
+                    "Question {n} can have up to {MAX_ANSWERS} right answers."
+                ));
+            }
+            if answers
+                .iter()
+                .any(|a| a.chars().count() > MAX_ANSWER_CHARS || a.contains('\0'))
+            {
+                return Err(format!("A right answer for question {n} is too long."));
+            }
+            let (kind, prompt) = match check.as_str() {
+                "includes" | "" => ("mentions", question.clone()),
+                "exact" => ("exact", format!("{question}{EXACT_SUFFIX}")),
                 "number" => {
-                    let value = graders::indic_number(&answer).map_err(|_| {
-                        format!("The right answer for question {n} must be one number, like 100 or ₹2,500.")
-                    })?;
-                    (
-                        json!({"type": "numeric", "expected": value.normalize().to_string()}),
-                        format!("{question}{NUMBER_SUFFIX}"),
-                    )
+                    if answers.iter().any(|a| graders::indic_number(a).is_err()) {
+                        return Err(format!(
+                            "The right answer for question {n} must be one number, like 100 or ₹2,500."
+                        ));
+                    }
+                    ("number", format!("{question}{NUMBER_SUFFIX}"))
                 }
                 _ => return Err(format!("Choose how to check question {n}.")),
             };
-            let mut task = json!({
+            tasks.push(json!({
                 "id": format!("Q{n:02}"), "version": 1, "category": "custom_questions",
                 "language": if has_devanagari(&question) { "hi-IN" } else { "en-IN" },
-                "prompt": prompt, "grader": grader,
-                "max_output_tokens": 1024, "timeout_s": 120});
-            if task["grader"]["type"] == "regex" {
-                // The free answer-key bot replies with the reference answer.
-                task["reference"] = json!(answer);
-            }
-            tasks.push(task);
+                "prompt": prompt,
+                "grader": {"type": "answer", "check": kind, "expected": answers},
+                "max_output_tokens": 1024, "timeout_s": 120}));
         }
         let document = json!({
             "name": id, "version": "1", "description": name,
@@ -2027,9 +2100,18 @@ impl Session {
             };
             costs.insert(spec, cost);
         }
+        // The most this test can send and receive, so the window can price
+        // any of OpenRouter's AIs the way the run's own check will.
+        let input: i64 = suite
+            .tasks
+            .iter()
+            .map(|t| krutrim_evaluator::pricing::max_input_tokens(&t.render_prompt()))
+            .sum();
+        let output: i64 = suite.tasks.iter().map(|t| t.max_output_tokens).sum();
         Ok(
             json!({"usd_to_inr": self.settings.usd_to_inr, "repeats": repeats,
-                  "questions": suite.tasks.len(), "costs": costs}),
+                  "questions": suite.tasks.len(), "costs": costs,
+                  "tokens": {"input": input * repeats, "output": output * repeats}}),
         )
     }
 
@@ -2045,6 +2127,16 @@ impl Session {
         }
         let store = Store::open(&self.settings.db_path)?;
         let payload = self.decorate(export::result_export(&store, run_id, true)?.value);
+        // What each check read from the reply ("found ₹2,400"), so a wrong
+        // mark explains itself. The export schema stays as it is.
+        let readings: BTreeMap<(String, String, i64), Map<String, Value>> = store
+            .results_for_run(run_id)?
+            .into_iter()
+            .filter_map(|r| {
+                let details = r.grade_details?;
+                Some(((r.task_id, r.runner, r.repeat_index), details))
+            })
+            .collect();
         drop(store);
         let mut labels = BTreeMap::new();
         for model in payload["models"].as_array().cloned().unwrap_or_default() {
@@ -2077,8 +2169,20 @@ impl Session {
             .map(|r| {
                 let task_id = r["task_id"].as_str().unwrap_or_default();
                 let runner = r["runner_id"].as_str().unwrap_or_default();
+                let reading = readings.get(&(
+                    task_id.to_string(),
+                    runner.to_string(),
+                    r["repeat_index"].as_i64().unwrap_or(0),
+                ));
+                let detail = |key: &str| {
+                    reading
+                        .and_then(|d| d.get(key))
+                        .and_then(|v| v.as_str())
+                        .map(|s| self.scrub(s))
+                };
                 json!({
                     "task_id": task_id, "runner": runner,
+                    "found": detail("found"), "matched": detail("matched"),
                     "label": labels.get(runner).cloned().unwrap_or_else(|| runner.to_string()),
                     "repeat": r["repeat_index"], "passed": r["passed"],
                     "status": r["status"], "grade_status": r["grade_status"],

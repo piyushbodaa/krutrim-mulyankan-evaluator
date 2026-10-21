@@ -11,6 +11,15 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraderSpec {
+    /// The checks behind tests people write in the desktop app. Unlike the
+    /// strict pilot graders, these read a reply the way a person would:
+    /// the final number in "The total is ₹2,500/-", "Tuesday." for
+    /// "Tuesday", and whole words only, so "15" never counts as "5".
+    Answer {
+        check: AnswerCheck,
+        expected: Vec<String>,
+        tolerance: Option<(Decimal, String)>,
+    },
     Exact {
         expected: Vec<String>,
         case_sensitive: bool,
@@ -40,9 +49,36 @@ pub enum GraderSpec {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerCheck {
+    Number,
+    Exact,
+    Mentions,
+}
+
+impl AnswerCheck {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AnswerCheck::Number => "number",
+            AnswerCheck::Exact => "exact",
+            AnswerCheck::Mentions => "mentions",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<AnswerCheck> {
+        match value {
+            "number" => Some(AnswerCheck::Number),
+            "exact" => Some(AnswerCheck::Exact),
+            "mentions" => Some(AnswerCheck::Mentions),
+            _ => None,
+        }
+    }
+}
+
 impl GraderSpec {
     pub fn kind(&self) -> &'static str {
         match self {
+            GraderSpec::Answer { .. } => "answer",
             GraderSpec::Exact { .. } => "exact",
             GraderSpec::LlmJudge { .. } => "llm_judge",
             GraderSpec::Json { .. } => "json",
@@ -54,6 +90,13 @@ impl GraderSpec {
 
     fn dump_json(&self) -> Value {
         match self {
+            GraderSpec::Answer {
+                check,
+                expected,
+                tolerance,
+            } => json!({
+                "check": check.as_str(), "expected": expected,
+                "tolerance": tolerance.as_ref().map(|(_, raw)| raw), "type": "answer"}),
             GraderSpec::Exact {
                 expected,
                 case_sensitive,
@@ -404,6 +447,41 @@ fn parse_grader(v: &Yaml) -> Result<GraderSpec, String> {
         .transpose()?
         .unwrap_or_default();
     match kind.as_str() {
+        "answer" => {
+            forbid_unknown(m, &["type", "check", "expected", "tolerance"], "grader")?;
+            let check = yopt_str(m, "check")?.ok_or("grader.check: field required")?;
+            let check = AnswerCheck::parse(&check)
+                .ok_or("grader.check: expected number, exact or mentions")?;
+            let expected: Vec<String> = match yget(m, "expected") {
+                Some(Yaml::Sequence(items)) => items
+                    .iter()
+                    .map(|x| ystr(x, "grader.expected"))
+                    .collect::<Result<_, _>>()?,
+                Some(other) => vec![ystr(other, "grader.expected")?],
+                None => return Err("grader.expected: field required".into()),
+            };
+            if expected.is_empty() || expected.iter().any(|e| e.trim().is_empty()) {
+                return Err("grader.expected: every answer must have text".into());
+            }
+            if check == AnswerCheck::Number {
+                for value in &expected {
+                    crate::graders::indic_number(value)
+                        .map_err(|e| format!("grader.expected: {value}: {e}"))?;
+                }
+            }
+            let tolerance = match yget(m, "tolerance") {
+                None | Some(Yaml::Null) => None,
+                Some(_) if check != AnswerCheck::Number => {
+                    return Err("grader.tolerance: only number checks take a tolerance".into())
+                }
+                Some(v) => Some(decimal_of(v, "grader.tolerance")?),
+            };
+            Ok(GraderSpec::Answer {
+                check,
+                expected,
+                tolerance,
+            })
+        }
         "exact" => {
             forbid_unknown(
                 m,
