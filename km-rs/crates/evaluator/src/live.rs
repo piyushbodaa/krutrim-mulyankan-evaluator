@@ -89,6 +89,7 @@ pub struct LiveMetrics {
     pub thinking_chars: usize,
     pub error: Option<String>,
     pub stopped: bool,
+    pub incomplete: bool,
 }
 
 impl LiveMetrics {
@@ -132,6 +133,7 @@ impl LiveMetrics {
             "thinking_chars": self.thinking_chars,
             "error": self.error,
             "stopped": self.stopped,
+            "incomplete": self.incomplete,
         })
     }
 }
@@ -191,6 +193,7 @@ pub fn stream_chat(
     on_event(LiveEvent::Connected(connected));
     let mut last_text: Option<f64> = None;
     let mut answer = String::new();
+    let mut completed = false;
     for line in BufReader::new(response.into_reader()).lines() {
         if stop.load(Ordering::Relaxed) {
             m.stopped = true;
@@ -206,6 +209,7 @@ pub fn stream_chat(
         };
         let data = data.trim();
         if data == "[DONE]" {
+            completed = true;
             break;
         }
         let Ok(chunk) = serde_json::from_str::<Value>(data) else {
@@ -264,6 +268,7 @@ pub fn stream_chat(
             }
             if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
                 m.finish_reason = Some(reason.to_string());
+                completed |= !reason.is_empty();
             }
         }
         if let Some(usage) = chunk.get("usage").filter(|usage| usage.is_object()) {
@@ -278,6 +283,8 @@ pub fn stream_chat(
             m.cost_usd = usage.get("cost").and_then(Value::as_f64);
         }
     }
+    // HTTP EOF can be clean even when the provider never finished the answer.
+    m.incomplete = !completed && m.error.is_none() && !m.stopped;
     m.total_s = since();
     m.answer_words = count_words(&answer);
     m
@@ -567,6 +574,61 @@ mod tests {
     }
 
     #[test]
+    fn clean_eof_without_completion_is_incomplete_and_keeps_partial_text() {
+        for body in [
+            sse(json!({"choices": [{"delta": {"content": "Part"}}]})),
+            String::new(),
+            "data: {broken json\n\n".to_string(),
+        ] {
+            let expected_chars = if body.contains("Part") { 4 } else { 0 };
+            let (base, server) = serve("200 OK", vec![body], Duration::ZERO);
+            let mut received = String::new();
+            let metrics = stream_chat(
+                &base,
+                "k",
+                "m",
+                "p",
+                &AtomicBool::new(false),
+                &mut |event| {
+                    if let LiveEvent::Text {
+                        text,
+                        thinking: false,
+                    } = event
+                    {
+                        received.push_str(text);
+                    }
+                },
+            );
+            server.join().unwrap();
+            assert!(metrics.incomplete && metrics.error.is_none() && !metrics.stopped);
+            assert_eq!(metrics.answer_chars, expected_chars);
+            assert_eq!(received, if expected_chars > 0 { "Part" } else { "" });
+            assert_eq!(metrics.to_json()["incomplete"], json!(true));
+        }
+    }
+
+    #[test]
+    fn either_terminal_event_or_finish_reason_marks_a_completed_stream() {
+        for terminal in [
+            "data: [DONE]\n\n".to_string(),
+            sse(json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+        ] {
+            let (base, server) = serve(
+                "200 OK",
+                vec![
+                    sse(json!({"choices": [{"delta": {"content": "Answer"}}]})),
+                    terminal,
+                ],
+                Duration::ZERO,
+            );
+            let metrics = stream_chat(&base, "k", "m", "p", &AtomicBool::new(false), &mut |_| {});
+            server.join().unwrap();
+            assert!(!metrics.incomplete && metrics.error.is_none() && !metrics.stopped);
+            assert_eq!(metrics.answer_chars, 6);
+        }
+    }
+
+    #[test]
     fn mid_stream_errors_and_stops_keep_what_arrived() {
         let pieces = vec![
             sse(json!({"choices": [{"delta": {"content": "Part"}}]})),
@@ -591,7 +653,7 @@ mod tests {
                 }
             }
         });
-        assert!(metrics.stopped && metrics.chunks == 3);
+        assert!(metrics.stopped && metrics.chunks == 3 && !metrics.incomplete);
     }
 
     #[test]

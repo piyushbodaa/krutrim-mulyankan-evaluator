@@ -50,6 +50,12 @@ const sideBySide = (() => {
   }
   const ms = (v) => (v === null || v === undefined ? "—" : secs(v / 1000));
   const money = (usd) => (usd === null || usd === undefined ? "—" : usd === 0 ? t("ai.free") : rupees(usd));
+  function paneCost(pane) {
+    for (const cost of [pane.metrics?.cost_usd, pane.server?.total_cost_usd]) {
+      if (Number.isFinite(cost) && cost >= 0) return cost;
+    }
+    return null;
+  }
   function contextLabel(n) {
     if (!n) return "—";
     if (n >= 1e6) return String(Math.round(n / 1e5) / 10) + "M";
@@ -410,8 +416,7 @@ const sideBySide = (() => {
         const pane = askState.panes[index];
         if (pane && !pane.done) finishPane(pane, result);
         if (pane && result.server) {
-          pane.server = result.server;
-          if (pane.view === "metrics") renderMetrics(pane);
+          updateServerStats(pane, result.server);
         }
       }
     } catch (error) {
@@ -528,8 +533,7 @@ const sideBySide = (() => {
     } else if (event.type === "done") {
       finishPane(pane, event.metrics || {});
     } else if (event.type === "stats") {
-      pane.server = event.stats;
-      if (pane.view === "metrics") renderMetrics(pane);
+      updateServerStats(pane, event.stats);
     }
   }
 
@@ -537,6 +541,7 @@ const sideBySide = (() => {
     sending: ["side.sending", "busy", null], waiting: ["side.waiting", "busy", null], stopping: ["side.stopping", "busy", null],
     thinking: ["side.thinkingState", "busy think", "thinking"], writing: ["side.writing", "busy", null],
     done: ["side.done", "ok", "done"], error: ["side.error", "bad", "error"], stopped: ["side.stopped", "", "stopped"],
+    incomplete: ["side.incomplete", "bad", "error"],
   };
   function setState(pane, kind) {
     const [key, cls, symbol] = STATES[kind];
@@ -555,12 +560,21 @@ const sideBySide = (() => {
     if (metrics.first_answer_s !== undefined && pane.firstAnswer === null) pane.firstAnswer = metrics.first_answer_s;
     if (metrics.connected_s !== undefined && pane.connected === null) pane.connected = metrics.connected_s;
     pane.dirty = true;
-    setState(pane, pane.error ? "error" : metrics.stopped ? "stopped" : "done");
+    setState(pane, pane.error ? "error" : metrics.stopped ? "stopped" : metrics.incomplete ? "incomplete" : "done");
     paint(pane, performance.now());
     // Finished answers read from the top, unless the reader scrolled.
     if (pane.follow && pane.body.scrollTo) pane.body.scrollTo({top: 0, behavior: reduceMotion ? "auto" : "smooth"});
     if (pane.view === "metrics") renderMetrics(pane);
     if (S.ask && S.ask.panes.every((p) => p.done)) finishAll();
+  }
+
+  function updateServerStats(pane, stats) {
+    pane.server = stats;
+    if (pane.done && S.ask?.panes.includes(pane)) {
+      paint(pane, performance.now());
+      if (S.ask.panes.every((p) => p.done)) finishAll();
+    }
+    if (pane.view === "metrics") renderMetrics(pane);
   }
 
   function startTicking() {
@@ -616,7 +630,7 @@ const sideBySide = (() => {
     else place(think, 0, 0);
     if (pane.firstAnswer !== null) place(write, pane.firstAnswer, end);
     else place(write, 0, 0);
-    pane.flag.hidden = !(pane.done && !pane.error);
+    pane.flag.hidden = !(pane.done && !pane.error && !pane.metrics?.incomplete);
     pane.flag.style.left = pct(end);
   }
 
@@ -633,14 +647,14 @@ const sideBySide = (() => {
       values[1].textContent = writing > 0.3 ? "≈" + Math.round(estimate / writing) + "/s" : "…";
     } else values[1].textContent = pane.done ? "—" : "…";
     values[2].textContent = secs(paneTime(pane, now));
-    const cost = m.cost_usd;
+    const cost = paneCost(pane);
     values[3].textContent = !pane.done ? "…" : cost === null || cost === undefined ? "—" : cost === 0 ? t("ai.free")
       : (cost * rate() < 0.01 ? "<0.01" : rupees(cost).replace("₹", ""));
     if (!pane.dirty) return;
     pane.dirty = false;
     if (pane.thinking) pane.thinkingBox.querySelector(".thinking-text").textContent = pane.thinking;
-    if (pane.error) {
-      pane.answer.replaceChildren(el("p", {class: "pane-error", text: pane.error}));
+    if (pane.error || m.incomplete) {
+      pane.answer.replaceChildren(el("p", {class: "pane-error", text: pane.error || t("side.incompleteNote")}));
       if (pane.text) pane.answer.prepend(...markdown(pane.text));
     } else {
       pane.answer.replaceChildren(...markdown(pane.text));
@@ -719,6 +733,7 @@ const sideBySide = (() => {
 
   function renderMetrics(pane) {
     const m = pane.metrics || {};
+    const cost = paneCost(pane);
     const info = pane.m;
     const server = pane.server || {};
     const now = performance.now();
@@ -758,7 +773,7 @@ const sideBySide = (() => {
         [t("side.mMaxReply"), tokens(info.max_output)],
       ]],
       [t("side.secCost"), [
-        [t("side.mCost"), m.cost_usd !== undefined && m.cost_usd !== null ? `${money(m.cost_usd)} · $${m.cost_usd.toFixed(m.cost_usd < 0.01 ? 5 : 3)}` : "—"],
+        [t("side.mCost"), cost !== null ? `${money(cost)} · $${cost.toFixed(cost < 0.01 ? 5 : 3)}` : "—"],
         [t("side.mInputCost"), inCost !== null ? money(inCost) : "—"],
         [t("side.mOutputCost"), outCost !== null ? money(outCost) : "—"],
         [t("side.mPriceIn"), perMillion(info.input_usd)],
@@ -790,7 +805,7 @@ const sideBySide = (() => {
   }
 
   function finishAll() {
-    const ok = S.ask.panes.filter((p) => !p.error && p.metrics && !p.metrics.stopped);
+    const ok = S.ask.panes.filter((p) => !p.error && p.metrics && !p.metrics.stopped && !p.metrics.incomplete);
     for (const pane of S.ask.panes) pane.node.querySelector(".pane-badges").replaceChildren();
     const wins = [];
     if (ok.length >= 2) {
@@ -803,7 +818,7 @@ const sideBySide = (() => {
       };
       best((p) => p.metrics.total_s, "finish", (a, b) => a < b);
       best((p) => p.metrics.tokens_per_s ?? NaN, "speed", (a, b) => a > b);
-      best((p) => p.metrics.cost_usd ?? NaN, "cheap", (a, b) => a < b);
+      if (ok.every((p) => paneCost(p) !== null)) best((p) => paneCost(p), "cheap", (a, b) => a < b);
       best((p) => firstToken(p), "start", (a, b) => a < b);
     }
     wins.forEach(([pane, kind], index) => {
@@ -811,7 +826,11 @@ const sideBySide = (() => {
       pane.node.querySelector(".pane-badges").append(node);
       pop(node, 120 + index * 90);
     });
-    const spent = S.ask.panes.reduce((sum, p) => sum + ((p.metrics && p.metrics.cost_usd) || 0), 0);
+    const costs = S.ask.panes.map(paneCost);
+    const unknown = costs.filter((cost) => cost === null).length;
+    const spent = costs.reduce((sum, cost) => sum + (cost ?? 0), 0);
+    const total = unknown === costs.length ? t("side.costUnknown")
+      : unknown ? t("side.costPartial", {money: rupees(spent), n: unknown}) : rupees(spent);
     const summary = $("side-summary");
     summary.replaceChildren();
     for (const pane of S.ask.panes) {
@@ -819,7 +838,7 @@ const sideBySide = (() => {
       if (!mine.length) continue;
       summary.append(el("span", {class: "sum-item"}, ...mine.map(badge), el("span", {text: splitModelName(pane.m).short})));
     }
-    summary.append(el("span", {class: "sum-item sum-total", title: t("side.tipTotal")}, icon("total"), el("span", {text: rupees(spent)})));
+    summary.append(el("span", {class: "sum-item sum-total", title: t(unknown ? "side.tipSubtotal" : "side.tipTotal")}, icon("total"), el("span", {text: total})));
     summary.hidden = false;
     $("side-stop").hidden = true;
   }
@@ -834,8 +853,9 @@ const sideBySide = (() => {
       lines.push(`## ${splitModelName(pane.m).short} (${pane.id})`, "");
       lines.push(`| ${t("side.firstToken")} | ${t("side.speed")} | ${t("side.time")} | ${t("side.cost")} | ${t("side.mInput")} | ${t("side.mOutput")} |`);
       lines.push("|---|---|---|---|---|---|");
-      lines.push(`| ${secs(firstToken(pane))} | ${m.tokens_per_s ? t("side.tps", {n: m.tokens_per_s.toFixed(1)}) : "—"} | ${secs(m.total_s)} | ${money(m.cost_usd)} | ${tokens(m.input_tokens)} | ${tokens(m.output_tokens)} |`, "");
-      lines.push(pane.error ? `> ${pane.error}` : pane.text, "");
+      lines.push(`| ${secs(firstToken(pane))} | ${m.tokens_per_s ? t("side.tps", {n: m.tokens_per_s.toFixed(1)}) : "—"} | ${secs(m.total_s)} | ${money(paneCost(pane))} | ${tokens(m.input_tokens)} | ${tokens(m.output_tokens)} |`, "");
+      if (pane.error || m.incomplete) lines.push(`> ${pane.error || t("side.incompleteNote")}`, "");
+      lines.push(pane.text, "");
     }
     try {
       const where = await bridge.saveText(`side-by-side-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`, lines.join("\n"));
@@ -886,7 +906,18 @@ const sideBySide = (() => {
       if (state.screen !== "side") return;
       renderPicks();
       renderKey();
-      if (S.ask) for (const pane of S.ask.panes) if (pane.view === "metrics") renderMetrics(pane);
+      if (S.ask) {
+        for (const pane of S.ask.panes) {
+          if (pane.done) {
+            const m = pane.metrics || {};
+            setState(pane, pane.error ? "error" : m.stopped ? "stopped" : m.incomplete ? "incomplete" : "done");
+            pane.dirty = true;
+            paint(pane, performance.now());
+          }
+          if (pane.view === "metrics") renderMetrics(pane);
+        }
+        if (S.ask.panes.every((p) => p.done)) finishAll();
+      }
     });
   }
 
