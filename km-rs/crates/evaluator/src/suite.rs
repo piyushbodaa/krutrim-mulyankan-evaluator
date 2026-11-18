@@ -641,10 +641,14 @@ fn parse_task(v: &Yaml, path: &Path) -> Result<Task, String> {
         .into_iter()
         .map(PathBuf::from)
         .collect();
-    if fixtures
-        .iter()
-        .any(|p| p.is_absolute() || p.components().any(|c| c.as_os_str() == ".."))
-    {
+    if fixtures.iter().any(|p| {
+        p.components().any(|c| {
+            !matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    }) {
         return Err("fixtures must be relative paths inside the suite directory".into());
     }
     if let GraderSpec::Workflow { fixture, .. } = &grader {
@@ -750,15 +754,27 @@ pub fn parse_suite(doc: &Yaml, path: &Path) -> Result<Suite, String> {
     for item in &task_items {
         let task = parse_task(item, path)?;
         for fixture in &task.fixtures {
-            let base = path.parent().unwrap_or(Path::new("."));
-            let resolved = base.join(fixture);
-            if !resolved.is_file() {
-                return Err(format!(
+            let base = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let missing = || {
+                format!(
                     "{}: task '{}' fixture not found: {}",
                     path.display(),
                     task.id,
                     fixture.display()
+                )
+            };
+            let resolved = base.join(fixture).canonicalize().map_err(|_| missing())?;
+            if !resolved.starts_with(base.canonicalize().map_err(|e| e.to_string())?) {
+                return Err(format!(
+                    "fixture escapes suite directory: {}",
+                    fixture.display()
                 ));
+            }
+            if !resolved.is_file() {
+                return Err(missing());
             }
         }
         tasks.push(task);
@@ -827,4 +843,30 @@ pub fn discover_suites(suites_dir: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+#[cfg(all(test, unix))]
+mod fixture_tests {
+    use super::*;
+
+    #[test]
+    fn fixture_links_must_resolve_inside_the_suite() {
+        let root = tempfile::tempdir().unwrap();
+        let pack = root.path().join("pack");
+        std::fs::create_dir(&pack).unwrap();
+        let suite_path = pack.join("suite.yaml");
+        let template = include_str!("../../../../suites/example.yaml");
+        let doc = template.replacen("    grader:", "    fixtures: [fixture.txt]\n    grader:", 1);
+        std::fs::write(&suite_path, doc).unwrap();
+        std::fs::write(root.path().join("outside.txt"), "outside fixture").unwrap();
+        let fixture = pack.join("fixture.txt");
+        std::os::unix::fs::symlink("../outside.txt", &fixture).unwrap();
+        assert!(load_suite(&suite_path)
+            .unwrap_err()
+            .contains("escapes suite directory"));
+        std::fs::remove_file(&fixture).unwrap();
+        std::fs::write(pack.join("inside.txt"), "inside fixture").unwrap();
+        std::os::unix::fs::symlink("inside.txt", fixture).unwrap();
+        assert!(load_suite(&suite_path).is_ok());
+    }
 }

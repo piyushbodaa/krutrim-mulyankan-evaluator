@@ -11,6 +11,7 @@ pub mod history;
 pub mod importer;
 pub mod judge;
 pub mod live;
+pub mod loopback_http;
 pub mod microeval;
 pub mod miner;
 pub mod observations;

@@ -13,6 +13,7 @@ pub struct Settings {
     pub prices_path: PathBuf,
     pub max_usd: f64,
     pub usd_to_inr: f64,
+    pub bundled_suites: std::sync::Arc<std::sync::OnceLock<Result<tempfile::TempDir, String>>>,
 }
 
 impl Settings {
@@ -24,6 +25,7 @@ impl Settings {
         let get = |k: &str| env.get(k).cloned();
         let runs_dir = PathBuf::from(get("MJ_RUNS_DIR").unwrap_or_else(|| "runs".into()));
         Settings {
+            bundled_suites: Default::default(),
             db_path: get("MJ_DB")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| runs_dir.join("results.db")),
@@ -77,25 +79,60 @@ pub const EMBEDDED_SUITES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Materialize the embedded suites into a per-process temp dir (idempotent).
-pub fn embedded_suites_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("km-suites-{}", std::process::id()));
-    for (name, text) in EMBEDDED_SUITES {
-        let target = dir.join(name);
-        if !target.is_file() {
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::write(&target, text);
-        }
+/// Create a fresh, user-private directory even with a permissive umask.
+pub(crate) fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("km-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
     }
-    dir
+    builder.tempdir()
 }
 
-/// The suites dir to use, falling back to the embedded copies when the
-/// configured directory holds no suite files.
-pub fn effective_suites_dir(settings: &Settings) -> PathBuf {
+fn embedded_suites_dir() -> std::io::Result<tempfile::TempDir> {
+    let dir = private_tempdir()?;
+    for (name, text) in EMBEDDED_SUITES {
+        std::fs::write(dir.path().join(name), text)?;
+    }
+    Ok(dir)
+}
+
+/// Keep bundled files alive for the lifetime of the settings and its clones.
+pub fn effective_suites_dir(settings: &Settings) -> Result<PathBuf, String> {
     if crate::suite::discover_suites(&settings.suites_dir).is_empty() {
-        embedded_suites_dir()
+        settings
+            .bundled_suites
+            .get_or_init(|| embedded_suites_dir().map_err(|e| e.to_string()))
+            .as_ref()
+            .map(|dir| dir.path().to_owned())
+            .map_err(Clone::clone)
     } else {
-        settings.suites_dir.clone()
+        Ok(settings.suites_dir.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_suites_share_a_private_directory_until_settings_drop() {
+        let mut settings = Settings::from_map(&BTreeMap::new());
+        let empty = private_tempdir().unwrap();
+        settings.suites_dir = empty.path().to_path_buf();
+        let path = effective_suites_dir(&settings).unwrap();
+        assert_eq!(effective_suites_dir(&settings.clone()).unwrap(), path);
+        for (name, text) in EMBEDDED_SUITES {
+            assert_eq!(std::fs::read_to_string(path.join(name)).unwrap(), *text);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o077, 0);
+        }
+        drop(settings);
+        assert!(!path.exists());
     }
 }

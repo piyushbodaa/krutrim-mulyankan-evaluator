@@ -42,8 +42,11 @@ const bridge = (() => {
       });
       return result;
     }
-    fetch("/rpc", {method: "POST", headers: {"content-type": "application/json"}, body})
+    fetch("/rpc", {method: "POST", headers: {
+      "content-type": "application/json", "x-km-token": new URLSearchParams(location.hash.slice(1)).get("token") || ""
+    }, body})
       .then(async (response) => {
+        if (!response.ok) throw new Error("Open the preview URL printed by the engine.");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";

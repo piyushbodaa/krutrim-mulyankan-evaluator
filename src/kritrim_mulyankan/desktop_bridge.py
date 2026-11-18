@@ -15,7 +15,7 @@ import secrets
 import sys
 import threading
 from collections.abc import Callable, Mapping, MutableMapping
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
@@ -26,6 +26,7 @@ from kritrim_mulyankan.export import result_export, write_export
 from kritrim_mulyankan.history import load_history
 from kritrim_mulyankan.judge import judge_problems, make_judge, parse_judge_spec
 from kritrim_mulyankan.local_ui import TITLES
+from kritrim_mulyankan.loopback_http import LoopbackHTTPServer
 from kritrim_mulyankan.microeval import write_micro_eval
 from kritrim_mulyankan.miner import (
     VerdictCache,
@@ -297,7 +298,7 @@ class DesktopSession:
         self._busy = False
         self._lock = threading.Lock()
         self._token = secrets.token_urlsafe(24)
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: LoopbackHTTPServer | None = None
         self._external_base: str | None = None
         self._names: dict[str, str] = {}
         self._live_prices: PriceTable | None = None
@@ -1140,7 +1141,7 @@ class DesktopSession:
         if self._httpd is not None:
             return
         handler = make_handler(self, shell=False)
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        server = LoopbackHTTPServer(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, name="km-dashboard", daemon=True)
         thread.start()
         self._httpd = server
@@ -1277,7 +1278,7 @@ def _safe_join(root: Path, relative: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def make_handler(session: DesktopSession, *, shell: bool):
+def make_handler(session: DesktopSession, *, shell: bool, rpc_token: str | None = None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.0"
 
@@ -1299,7 +1300,16 @@ def make_handler(session: DesktopSession, *, shell: bool):
                 return False
             return secrets.compare_digest(supplied, expected)
 
+        def _local_host(self) -> bool:
+            return self.headers.get("Host") in {
+                f"127.0.0.1:{self.server.server_port}",
+                f"localhost:{self.server.server_port}",
+            }
+
         def do_GET(self) -> None:  # noqa: N802
+            if not self._local_host():
+                self._send(403, b"Local requests only.", "text/plain; charset=utf-8")
+                return
             path, _, raw_query = self.path.partition("?")
             query = parse_qs(raw_query)
             if shell and path in {"/", "/index.html"}:
@@ -1357,16 +1367,36 @@ def make_handler(session: DesktopSession, *, shell: bool):
             self._send(404, b"Not found", "text/plain; charset=utf-8")
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/rpc":
+            if not shell or not rpc_token or self.path != "/rpc":
                 self._send(404, b"Not found", "text/plain; charset=utf-8")
                 return
-            length = int(self.headers.get("Content-Length", "0") or 0)
+            host = self.headers.get("Host")
+            token = self.headers.get("X-KM-Token", "")
+            if (
+                not self._local_host()
+                or self.headers.get("Origin") != f"http://{host}"
+                or self.headers.get_content_type() != "application/json"
+                or not token.isascii()
+                or not secrets.compare_digest(token, rpc_token)
+            ):
+                self._send(403, b"Open the preview URL printed by the engine.", "text/plain")
+                return
+            lengths = self.headers.get_all("Content-Length", [])
+            if len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,10}", lengths[0]):
+                self._send(400, b"Invalid request length.", "text/plain")
+                return
+            length = int(lengths[0])
             if length > 262_144:
                 self._send(413, b"Message is too large.", "text/plain; charset=utf-8")
                 return
             try:
-                request = json.loads(self.rfile.read(length) or b"{}")
-            except json.JSONDecodeError:
+                data = self.rfile.read(length)
+                if len(data) != length:
+                    raise ValueError("Incomplete request")
+                request = json.loads(data)
+                if not isinstance(request, dict):
+                    raise ValueError("Expected an object")
+            except (ValueError, UnicodeDecodeError):
                 self._send(400, b"The message could not be read.", "text/plain; charset=utf-8")
                 return
             self.send_response(200)
@@ -1521,10 +1551,13 @@ def serve_stdio(session: DesktopSession | None = None) -> None:
 def serve_http(port: int = 0) -> None:
     """Loopback-only shell used for local preview and screenshots. Not for a public network."""
     session = DesktopSession()
-    handler = make_handler(session, shell=True)
-    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    rpc_token = secrets.token_urlsafe(32)
+    handler = make_handler(session, shell=True, rpc_token=rpc_token)
+    server = LoopbackHTTPServer(("127.0.0.1", port), handler)
     session.attach_http(f"http://127.0.0.1:{server.server_port}")
-    sys.stderr.write(f"Krutrim Mulyankan desktop http://127.0.0.1:{server.server_port}/\n")
+    sys.stderr.write(
+        f"Krutrim Mulyankan desktop http://127.0.0.1:{server.server_port}/#token={rpc_token}\n"
+    )
     sys.stderr.flush()
     server.serve_forever()
 

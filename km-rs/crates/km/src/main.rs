@@ -144,7 +144,7 @@ fn settings() -> Settings {
     Settings::from_env()
 }
 
-fn suites_dir(s: &Settings) -> PathBuf {
+fn suites_dir(s: &Settings) -> Result<PathBuf, String> {
     effective_suites_dir(s)
 }
 
@@ -166,7 +166,7 @@ fn cmd_list(args: &[String]) -> Result<u8, String> {
     let s = settings();
     match what {
         "suites" => {
-            let dir = suites_dir(&s);
+            let dir = suites_dir(&s)?;
             let paths = discover_suites(&dir);
             if paths.is_empty() {
                 let shown = repr_path(&dir);
@@ -407,7 +407,7 @@ fn cmd_doctor(_args: &[String]) -> Result<u8, String> {
     let env_map: BTreeMap<String, String> = std::env::vars().collect();
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut hard_fail = false;
-    let dir = suites_dir(&s);
+    let dir = suites_dir(&s)?;
     let paths = krutrim_evaluator::discover_suites(&dir);
     let mut loaded = 0;
     for path in &paths {
@@ -712,7 +712,7 @@ fn cmd_micro_eval(args: &[String]) -> Result<u8, String> {
         Err(e) => return Ok(err1(e)),
     };
     let progress = |done: usize, total: usize, _pair: &krutrim_evaluator::history::PromptPair| {
-        if done == 1 || done == total || done % 25 == 0 {
+        if done == 1 || done == total || done.is_multiple_of(25) {
             println!(" judging {done}/{total}…");
         }
     };
@@ -889,7 +889,7 @@ fn cmd_run(args: &[String]) -> Result<u8, String> {
         Err(code) => return Ok(code),
     };
     let s = settings();
-    let dir = suites_dir(&s);
+    let dir = suites_dir(&s)?;
     let path = match resolve_suite(&parsed.suite, &dir) {
         Ok(p) => p,
         Err(e) => return Ok(err1(e)),

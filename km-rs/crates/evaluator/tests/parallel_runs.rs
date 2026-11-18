@@ -174,6 +174,7 @@ fn runners(mock: &Mock, specs: &[&str]) -> Vec<Runner> {
 
 fn settings(dir: &Path) -> Settings {
     Settings {
+        bundled_suites: Default::default(),
         db_path: dir.join("results.db"),
         suites_dir: dir.to_path_buf(),
         prices_path: dir.join("no-prices.yaml"),

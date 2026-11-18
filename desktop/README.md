@@ -53,7 +53,7 @@ A loopback page, useful for screenshots and for clicking through without Rust:
 
 ```sh
 KM_RESOURCE_ROOT="$PWD" uv run python -m kritrim_mulyankan.desktop_bridge --http 17322
-# open http://127.0.0.1:17322/
+# open the complete preview URL printed by the command
 ```
 
 Do not expose that port. It is bound to `127.0.0.1`.

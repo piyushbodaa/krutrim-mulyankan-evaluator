@@ -7,7 +7,7 @@
 use krutrim_evaluator::*;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -210,6 +210,7 @@ impl Session {
                 .unwrap_or_else(|| root.join("runs").to_string_lossy().into_owned()),
         );
         let settings = Settings {
+            bundled_suites: Default::default(),
             db_path: env
                 .get("MJ_DB")
                 .map(PathBuf::from)
@@ -410,7 +411,7 @@ impl Session {
     }
 
     fn suites(&self) -> Result<Vec<Suite>, String> {
-        let dir = effective_suites_dir(&self.settings);
+        let dir = effective_suites_dir(&self.settings)?;
         let mut suites = Vec::new();
         for p in discover_suites(&dir) {
             suites.push(load_suite(&p)?);
@@ -1531,7 +1532,7 @@ impl Session {
         if self.http_port.lock().unwrap().is_some() {
             return;
         }
-        if let Some(port) = serve_async(Arc::new(self.sibling()), 0, false) {
+        if let Some(port) = serve_async(Arc::new(self.sibling()), 0, None) {
             *self.http_port.lock().unwrap() = Some(port);
         }
     }
@@ -2449,40 +2450,11 @@ struct Request {
     method: String,
     path: String,
     query: BTreeMap<String, String>,
+    headers: std::collections::HashMap<String, String>,
     body: Vec<u8>,
 }
 
-fn read_request(stream: &mut std::net::TcpStream) -> Option<Request> {
-    let mut reader = BufReader::new(stream.try_clone().ok()?);
-    let mut first = String::new();
-    if reader.read_line(&mut first).ok()? == 0 {
-        return None;
-    }
-    let parts: Vec<&str> = first.split_whitespace().collect();
-    if parts.len() < 2 {
-        return None;
-    }
-    let (method, target) = (parts[0].to_string(), parts[1].to_string());
-    let mut length = 0usize;
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).ok()? == 0 {
-            break;
-        }
-        let line = line.trim_end();
-        if line.is_empty() {
-            break;
-        }
-        if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("content-length") {
-                length = v.trim().parse().unwrap_or(0);
-            }
-        }
-    }
-    let mut body = vec![0u8; length];
-    if length > 0 {
-        reader.read_exact(&mut body).ok()?;
-    }
+fn parse_target(target: String) -> (String, BTreeMap<String, String>) {
     let (path, query_raw) = match target.split_once('?') {
         Some((p, q)) => (p.to_string(), q.to_string()),
         None => (target, String::new()),
@@ -2492,12 +2464,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<Request> {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         query.insert(percent_decode(k), percent_decode(v));
     }
-    Some(Request {
-        method,
-        path: percent_decode(&path),
-        query,
-        body,
-    })
+    (percent_decode(&path), query)
 }
 
 fn percent_decode(s: &str) -> String {
@@ -2538,14 +2505,30 @@ fn send(stream: &mut std::net::TcpStream, status: u16, body: &[u8], ctype: &str)
 
 fn handle_http(
     session: &Arc<Session>,
-    shell: bool,
+    rpc_token: Option<&str>,
     req: Request,
     stream: &mut std::net::TcpStream,
 ) {
     match req.method.as_str() {
         "POST" => {
-            if req.path != "/rpc" {
+            if rpc_token.is_none() || req.path != "/rpc" {
                 send(stream, 404, b"Not found", "text/plain; charset=utf-8");
+                return;
+            }
+            let host = req.headers.get("host").map_or("", String::as_str);
+            if req.headers.get("origin") != Some(&format!("http://{host}"))
+                || req.headers.get("content-type").map(String::as_str) != Some("application/json")
+                || !constant_time_eq(
+                    req.headers.get("x-km-token").map_or("", String::as_str),
+                    rpc_token.unwrap_or(""),
+                )
+            {
+                send(
+                    stream,
+                    403,
+                    b"Open the preview URL printed by the engine.",
+                    "text/plain; charset=utf-8",
+                );
                 return;
             }
             if req.body.len() > 262_144 {
@@ -2581,16 +2564,18 @@ fn handle_http(
         "GET" => {
             let path = req.path.as_str();
             let ui = ui_dir(&session.root);
-            if shell && (path == "/" || path == "/index.html") {
+            if rpc_token.is_some() && (path == "/" || path == "/index.html") {
                 return send_file(stream, &ui.join("index.html"), "text/html; charset=utf-8");
             }
-            if shell && path.starts_with("/brand/") {
+            if rpc_token.is_some() && path.starts_with("/brand/") {
                 return match safe_join(&ui, &path[1..]) {
                     Some(t) => send_file(stream, &t, mime(&t)),
                     None => send(stream, 404, b"Not found", "text/plain; charset=utf-8"),
                 };
             }
-            if shell && SHELL_FILES.contains(&path.trim_start_matches('/')) && path != "/index.html"
+            if rpc_token.is_some()
+                && SHELL_FILES.contains(&path.trim_start_matches('/'))
+                && path != "/index.html"
             {
                 let name = path.trim_start_matches('/');
                 return send_file(stream, &ui.join(name), mime(Path::new(name)));
@@ -2669,19 +2654,44 @@ fn send_file(stream: &mut std::net::TcpStream, path: &Path, ctype: &str) {
     }
 }
 
-fn serve_async(session: Arc<Session>, port: u16, shell: bool) -> Option<u16> {
+fn serve_async(session: Arc<Session>, port: u16, rpc_token: Option<String>) -> Option<u16> {
     let listener = TcpListener::bind(("127.0.0.1", port)).ok()?;
     let bound = listener.local_addr().ok()?.port();
     std::thread::spawn(move || {
-        for conn in listener.incoming() {
-            let Ok(mut stream) = conn else { continue };
-            let session = session.clone();
-            std::thread::spawn(move || {
-                if let Some(req) = read_request(&mut stream) {
-                    handle_http(&session, shell, req, &mut stream);
+        loopback_http::serve(listener, move |mut stream| {
+            let max_body = if rpc_token.is_some() { 262_144 } else { 0 };
+            let frame = match loopback_http::read_request(&mut stream, max_body) {
+                Ok(frame) => frame,
+                Err(status) => {
+                    send(
+                        &mut stream,
+                        status,
+                        b"Invalid request framing.",
+                        "text/plain; charset=utf-8",
+                    );
+                    return;
                 }
-            });
-        }
+            };
+            let host = frame.headers.get("host").map_or("", String::as_str);
+            if host != format!("127.0.0.1:{bound}") && host != format!("localhost:{bound}") {
+                send(
+                    &mut stream,
+                    403,
+                    b"Local requests only.",
+                    "text/plain; charset=utf-8",
+                );
+                return;
+            }
+            let (path, query) = parse_target(frame.target);
+            let req = Request {
+                method: frame.method,
+                headers: frame.headers,
+                path,
+                query,
+                body: frame.body,
+            };
+            handle_http(&session, rpc_token.as_deref(), req, &mut stream);
+        });
     });
     Some(bound)
 }
@@ -2790,9 +2800,13 @@ fn main() {
     };
     if args.first().map(|s| s.as_str()) == Some("--http") {
         let port: u16 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
-        if let Some(bound) = serve_async(session.clone(), port, true) {
+        let Ok(rpc_token) = tokens::random_token() else {
+            eprintln!("Cannot create a preview session.");
+            return;
+        };
+        if let Some(bound) = serve_async(session.clone(), port, Some(rpc_token.clone())) {
             *session.external_base.lock().unwrap() = Some(format!("http://127.0.0.1:{bound}"));
-            eprintln!("Krutrim Mulyankan desktop http://127.0.0.1:{bound}/");
+            eprintln!("Krutrim Mulyankan desktop http://127.0.0.1:{bound}/#token={rpc_token}");
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(3600));
             }
@@ -2901,6 +2915,7 @@ mod tests {
         std::fs::copy(&fixture, &export).unwrap();
         let session = Session {
             settings: Settings {
+                bundled_suites: Default::default(),
                 runs_dir: runs.clone(),
                 db_path: runs.join("results.db"),
                 suites_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../suites"),

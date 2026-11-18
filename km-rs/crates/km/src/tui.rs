@@ -114,8 +114,11 @@ pub struct App {
 
 impl App {
     pub fn new(opts: UiOptions, settings: Settings) -> App {
-        let dir = effective_suites_dir(&settings);
-        let mut suites: Vec<(String, PathBuf)> = discover_suites(&dir)
+        let (paths, status) = match effective_suites_dir(&settings) {
+            Ok(dir) => (discover_suites(&dir), String::new()),
+            Err(error) => (Vec::new(), error),
+        };
+        let mut suites: Vec<(String, PathBuf)> = paths
             .into_iter()
             .map(|path| {
                 (
@@ -148,7 +151,7 @@ impl App {
             key_index: 0,
             key_buffer: String::new(),
             key_touched: false,
-            status: String::new(),
+            status,
             outcome: None,
         }
     }

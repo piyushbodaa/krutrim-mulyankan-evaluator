@@ -244,14 +244,23 @@ fn execute(
     runner: &Runner,
     task: &Task,
     prompt: &str,
-    ctx: &RunContext,
+    mut ctx: RunContext,
     fixture_base: &Path,
     judge: Option<&JudgeFn>,
 ) -> Outcome {
-    let (out, latency) = attempt(runner, task, prompt, ctx);
-    if ctx.workdir != fixture_base {
-        let _ = std::fs::remove_dir_all(&ctx.workdir);
-    }
+    let workdir = match make_workdir(fixture_base, task) {
+        Ok(dir) => dir,
+        Err(error) => {
+            return (
+                RunOutput::error(format!("Cannot prepare task files: {error}")),
+                None,
+                "error",
+                None,
+            )
+        }
+    };
+    ctx.workdir = workdir.path().to_owned();
+    let (out, latency) = attempt(runner, task, prompt, &ctx);
     let run_status = if out.error.is_some() { "error" } else { "ok" };
     let grade = if run_status == "ok" {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -471,7 +480,7 @@ pub fn run_suite_with(
         }
     };
     let context = |p: &Planned| RunContext {
-        workdir: make_workdir(&fixture_base, p.task),
+        workdir: PathBuf::new(),
         seed: derive_seed(seed, &p.task.id, p.repeat_index),
         timeout_s: p.task.timeout_s,
         cancel: cancel.clone(),
@@ -537,7 +546,7 @@ pub fn run_suite_with(
                         p.runner,
                         p.task,
                         p.prompt,
-                        &context(p),
+                        context(p),
                         &fixture_base,
                         callbacks.judge,
                     );
@@ -620,7 +629,7 @@ pub fn run_suite_with(
                             scope.spawn(move || {
                                 let outcome =
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                        execute(runner, task, prompt, &ctx, base, judge)
+                                        execute(runner, task, prompt, ctx, base, judge)
                                     }))
                                     .unwrap_or_else(|_| {
                                         (
@@ -756,20 +765,16 @@ fn build_manifest(
     })
 }
 
-fn make_workdir(base: &std::path::Path, task: &Task) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("km-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
+fn make_workdir(base: &Path, task: &Task) -> std::io::Result<tempfile::TempDir> {
+    let dir = crate::settings::private_tempdir()?;
     for fixture in &task.fixtures {
-        let dest = dir.join(fixture);
+        let dest = dir.path().join(fixture);
         if let Some(parent) = dest.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::copy(base.join(fixture), &dest);
+        std::fs::copy(base.join(fixture), &dest)?;
     }
-    dir
+    Ok(dir)
 }
 
 fn attempt(

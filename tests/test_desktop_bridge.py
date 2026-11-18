@@ -123,6 +123,43 @@ def test_practice_run_feeds_the_existing_dashboard(session):
     assert caught.value.code == 403
 
 
+def test_preview_and_dashboard_rpc_permissions(session):
+    from kritrim_mulyankan.desktop_bridge import make_handler
+    from kritrim_mulyankan.loopback_http import LoopbackHTTPServer
+
+    for shell in (False, True):
+        handler = make_handler(session, shell=shell, rpc_token="preview-token" if shell else None)
+        with LoopbackHTTPServer(("127.0.0.1", 0), handler) as server:
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_port}"
+                for origin, token, expected in (
+                    (base, "preview-token", 200 if shell else 404),
+                    (base, "incorrect", 403 if shell else 404),
+                    ("https://example.invalid", "preview-token", 403 if shell else 404),
+                ):
+                    req = urllib.request.Request(
+                        base + "/rpc",
+                        json.dumps({"id": "test", "method": "ping"}).encode(),
+                        headers={
+                            "Content-Type": "application/json",
+                            "Origin": origin,
+                            "X-KM-Token": token,
+                        },
+                    )
+                    if expected == 200:
+                        with urllib.request.urlopen(req, timeout=2) as reply:
+                            assert json.load(reply)["ok"] is True
+                    else:
+                        with pytest.raises(urllib.error.HTTPError) as rejected:
+                            urllib.request.urlopen(req, timeout=2)
+                        assert rejected.value.code == expected
+            finally:
+                server.shutdown()
+                thread.join()
+
+
 def test_cancel_stops_the_active_run(monkeypatch, session):
     release = threading.Event()
     entered = threading.Event()

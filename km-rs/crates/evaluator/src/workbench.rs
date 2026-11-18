@@ -10,7 +10,7 @@ use crate::suite::{load_suite, Suite, Task};
 use crate::{make_runner, run_suite, Runner};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1017,6 +1017,7 @@ impl PilotService {
             .canonicalize()
             .unwrap_or_else(|_| project.to_path_buf());
         let settings = crate::Settings {
+            bundled_suites: Default::default(),
             suites_dir: project.join("suites"),
             runs_dir: project.join("runs"),
             db_path: project.join("runs").join("results.db"),
@@ -1950,13 +1951,6 @@ fn post_v1_route(bench: &Workbench, path: &str, body: &Value) -> Result<(Value, 
     }
 }
 
-struct HttpRequest {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-}
-
 struct HttpResponse {
     status: u16,
     content_type: String,
@@ -1973,62 +1967,6 @@ fn json_response(status: u16, value: &Value) -> HttpResponse {
     }
 }
 
-fn read_http_request(stream: &mut TcpStream) -> Option<HttpRequest> {
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 16384];
-    let header_end = loop {
-        if let Some(pos) = find_subslice(&buffer, b"\r\n\r\n") {
-            break pos;
-        }
-        match stream.read(&mut chunk) {
-            Ok(0) => return None,
-            Ok(n) => buffer.extend_from_slice(&chunk[..n]),
-            Err(_) => return None,
-        }
-        if buffer.len() > 2 * 1024 * 1024 {
-            return None;
-        }
-    };
-    let head = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
-    let mut lines = head.lines();
-    let request_line = lines.next()?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next()?.to_string();
-    let target = parts.next()?.to_string();
-    let path = target.split('?').next().unwrap_or("/").to_string();
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
-        }
-    }
-    let length: usize = headers
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let mut body = buffer[header_end + 4..].to_vec();
-    while body.len() < length {
-        match stream.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => body.extend_from_slice(&chunk[..n]),
-            Err(_) => break,
-        }
-    }
-    body.truncate(length);
-    Some(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
-    })
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -2036,6 +1974,7 @@ fn reason_phrase(status: u16) -> &'static str {
         302 => "Found",
         400 => "Bad Request",
         403 => "Forbidden",
+        413 => "Content Too Large",
         404 => "Not Found",
         409 => "Conflict",
         500 => "Internal Server Error",
@@ -2255,7 +2194,12 @@ fn handle_get(bench: &Workbench, path: &str, token: &str) -> HttpResponse {
     }
 }
 
-fn handle_post(bench: &Workbench, request: &HttpRequest, port: u16, token: &str) -> HttpResponse {
+fn handle_post(
+    bench: &Workbench,
+    request: &crate::loopback_http::Request,
+    port: u16,
+    token: &str,
+) -> HttpResponse {
     let service = &bench.service;
     let allowed_origins = [
         format!("http://127.0.0.1:{port}"),
@@ -2272,7 +2216,7 @@ fn handle_post(bench: &Workbench, request: &HttpRequest, port: u16, token: &str)
             &json!({"error": "Use the local workbench to run a check."}),
         );
     }
-    let path = request.path.as_str();
+    let path = request.target.split('?').next().unwrap_or("/");
     if !path.starts_with("/api/v1/")
         && !matches!(
             path,
@@ -2367,27 +2311,34 @@ fn serve_on(
     token: &str,
     port: u16,
 ) -> Result<(), String> {
-    for stream in listener.incoming() {
-        let Ok(mut stream) = stream else { continue };
-        let bench = bench.clone();
-        let token = token.to_string();
-        std::thread::spawn(move || {
-            let Some(request) = read_http_request(&mut stream) else {
+    let token = token.to_owned();
+    crate::loopback_http::serve(listener, move |mut stream| {
+        let request = match crate::loopback_http::read_request(&mut stream, 1024 * 1024) {
+            Ok(request) => request,
+            Err(status) => {
+                write_http_response(
+                    &mut stream,
+                    &json_response(status, &json!({"error": "Invalid request framing."})),
+                );
                 return;
-            };
-            let host = request.headers.get("host").cloned().unwrap_or_default();
-            let local = host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}");
-            let response = if !local {
-                json_response(403, &json!({"error": "This workbench is local only."}))
-            } else if request.method == "GET" {
-                handle_get(&bench, &request.path, &token)
-            } else if request.method == "POST" {
-                handle_post(&bench, &request, port, &token)
-            } else {
-                json_response(404, &json!({"error": "Page not found."}))
-            };
-            write_http_response(&mut stream, &response);
-        });
-    }
+            }
+        };
+        let host = request.headers.get("host").cloned().unwrap_or_default();
+        let local = host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}");
+        let response = if !local {
+            json_response(403, &json!({"error": "This workbench is local only."}))
+        } else if request.method == "GET" {
+            handle_get(
+                &bench,
+                request.target.split('?').next().unwrap_or("/"),
+                &token,
+            )
+        } else if request.method == "POST" {
+            handle_post(&bench, &request, port, &token)
+        } else {
+            json_response(404, &json!({"error": "Page not found."}))
+        };
+        write_http_response(&mut stream, &response);
+    });
     Ok(())
 }

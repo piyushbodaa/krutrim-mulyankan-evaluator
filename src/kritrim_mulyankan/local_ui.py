@@ -8,7 +8,7 @@ import re
 import secrets
 import threading
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -23,6 +23,7 @@ from kritrim_mulyankan.export import explanation_key, result_export, write_expor
 from kritrim_mulyankan.graders.deterministic import strict_json
 from kritrim_mulyankan.job_routes import get_route, post_route
 from kritrim_mulyankan.jobs import JobManager
+from kritrim_mulyankan.loopback_http import LoopbackHTTPServer
 from kritrim_mulyankan.runners.fake import EchoRunner, OracleRunner
 from kritrim_mulyankan.settings import Settings
 from kritrim_mulyankan.store import Store
@@ -365,7 +366,7 @@ class PilotService:
 
 def create_server(
     project: Path, port: int = 8765, *, service: PilotService | None = None
-) -> ThreadingHTTPServer:
+) -> LoopbackHTTPServer:
     service = service or PilotService(project)
     token = secrets.token_urlsafe(
         32
@@ -544,7 +545,7 @@ def create_server(
                     HTTPStatus.INTERNAL_SERVER_ERROR,
                 )
 
-    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    return LoopbackHTTPServer(("127.0.0.1", port), Handler)
 
 
 def serve(project: Path, port: int = 8765) -> None:
